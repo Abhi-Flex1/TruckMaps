@@ -269,7 +269,6 @@ function App() {
   const [routeGeometry, setRouteGeometry] = useState(null);
   const [routeEndpoints, setRouteEndpoints] = useState(null);
   const [truckSettings, setTruckSettings] = useState(loadTruckSettings);
-  const [truckWarnings, setTruckWarnings] = useState([]);
   const [userLocation, setUserLocation] = useState(null);
   const [navigationActive, setNavigationActive] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -282,19 +281,6 @@ function App() {
   const spokenStepKeyRef = useRef("");
   const startAutocompleteIdRef = useRef(0);
   const destinationAutocompleteIdRef = useRef(0);
-
-  const markerWarnings = routeGeometry
-    ? markers.features
-        .filter((feature) => feature.properties?.type === "avoid" || feature.properties?.type === "caution")
-        .map((feature) => {
-          const [lon, lat] = feature.geometry.coordinates;
-          const d = minDistanceToRouteMeters({ lon, lat }, routeGeometry.coordinates);
-          if (d > 200) return null;
-          return `${MARKER_TYPES[feature.properties?.type || "caution"]?.label} entro ${Math.round(d)}m`;
-        })
-        .filter(Boolean)
-    : [];
-  const warnings = [...truckWarnings, ...markerWarnings];
 
   const speak = (text) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
@@ -331,15 +317,11 @@ function App() {
       start: cacheData.snappedStart,
       destination: cacheData.snappedDestination
     });
-    setTruckWarnings(finalAnalysis ? best.warnings.slice(0, 4) : []);
     if (!finalAnalysis) {
-      setRouteHint("Percorso trovato. Verifica limiti camion in corso...");
+      setRouteHint("Percorso trovato. Ottimizzazione in corso...");
       setRouteError("");
-    } else if (best.hardCount > 0) {
-      setRouteHint("Percorso trovato con possibili limiti camion: verifica gli avvisi.");
-      setRouteError("Attenzione: non risultano alternative totalmente truck-safe in questa zona.");
     } else if (isRecalculation) {
-      setRouteHint("Percorso aggiornato (priorità sicurezza).");
+      setRouteHint("Percorso ottimizzato.");
       setRouteError("");
     } else {
       setRouteHint("Percorso pronto.");
@@ -554,6 +536,18 @@ function App() {
     setBottomPanelVisible((current) => !current);
   };
 
+  const handleRecenter = () => {
+    setFollowUser(true);
+    if (!userLocation || !mapObject) return;
+    mapObject.easeTo({
+      center: [userLocation.lon, userLocation.lat],
+      duration: 650,
+      zoom: Math.max(mapObject.getZoom(), 15.5),
+      bearing: Number.isFinite(userLocation.heading) ? userLocation.heading : mapObject.getBearing(),
+      pitch: 50
+    });
+  };
+
   const routeDistanceKm = routeInfo ? (routeInfo.distanceMeters / 1000).toFixed(1) : null;
   const routeDurationMin = routeInfo ? Math.round(routeInfo.durationSeconds / 60) : null;
   const activeStep = routeInfo?.steps?.[currentStepIndex] || routeInfo?.steps?.[0] || null;
@@ -600,16 +594,7 @@ function App() {
         </div>
       ) : null}
 
-      {warnings.length ? (
-        <div className={`alert-stack ${navigationActive ? "with-nav" : ""}`}>
-          <p className="warnings-title">Avvisi percorso</p>
-          {warnings.slice(0, 3).map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-        </div>
-      ) : null}
-
-      <button className="pressable recenter-orb" onClick={() => setFollowUser(true)} title="Riposiziona su di me">
+      <button className="pressable recenter-orb" onClick={handleRecenter} title="Riposiziona su di me">
         ↗
       </button>
 
