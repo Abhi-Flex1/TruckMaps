@@ -6,7 +6,7 @@ It describes the app architecture, implemented behavior, key files, recent major
 
 ## Project Identity
 - Name: `truck-maps-italy`
-- Type: React + Vite web app (also intended for Capacitor Android packaging)
+- Type: React + Vite web app with PWA install support
 - Scope: Italy-only truck navigation support, no backend
 - Data model: all local (localStorage), plus live data from public APIs
 
@@ -27,6 +27,10 @@ It describes the app architecture, implemented behavior, key files, recent major
 - Dev: `npm run dev`
 - Build: `npm run build`
 - Preview: `npm run preview`
+- PWA assets:
+  - `public/manifest.webmanifest`
+  - `public/sw.js`
+  - `public/icons/*`
 
 ## Current UX (Latest)
 - App language: Italian
@@ -113,7 +117,7 @@ These are inside the bottom sheet when visible.
 
 ## Handoff History (Major Change Timeline)
 1. Created full MVP from empty workspace (React/Vite, map, markers, settings, routing).
-2. Added Capacitor-ready setup docs and build flow.
+2. Added PWA-ready setup docs and web install flow.
 3. Improved route reliability (geocode scoring, snap-to-road, retries).
 4. Added truck-aware alternative selection with Overpass restrictions.
 5. Added Italian localization and navigation UI.

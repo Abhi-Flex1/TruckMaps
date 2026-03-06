@@ -248,11 +248,6 @@ function App() {
   const [routingCache, setRoutingCache] = useState(null);
   const lastRerouteTsRef = useRef(0);
   const spokenStepKeyRef = useRef("");
-  const panelGestureRef = useRef({
-    startY: 0,
-    tracking: false,
-    originVisible: true
-  });
 
   const markerWarnings = routeGeometry
     ? markers.features
@@ -480,34 +475,8 @@ function App() {
     saveTruckSettings(values);
   };
 
-  const getPointerY = (event) => {
-    if ("changedTouches" in event && event.changedTouches?.length) {
-      return event.changedTouches[0].clientY;
-    }
-    if ("touches" in event && event.touches?.length) {
-      return event.touches[0].clientY;
-    }
-    return event.clientY ?? 0;
-  };
-
-  const handlePanelSwipeStart = (event, originVisible) => {
-    panelGestureRef.current = {
-      startY: getPointerY(event),
-      tracking: true,
-      originVisible
-    };
-  };
-
-  const handlePanelSwipeEnd = (event) => {
-    const gesture = panelGestureRef.current;
-    if (!gesture.tracking) return;
-    const deltaY = getPointerY(event) - gesture.startY;
-    if (gesture.originVisible && deltaY > 40) {
-      setBottomPanelVisible(false);
-    } else if (!gesture.originVisible && deltaY < -30) {
-      setBottomPanelVisible(true);
-    }
-    panelGestureRef.current.tracking = false;
+  const toggleBottomPanel = () => {
+    setBottomPanelVisible((current) => !current);
   };
 
   const routeDistanceKm = routeInfo ? (routeInfo.distanceMeters / 1000).toFixed(1) : null;
@@ -577,10 +546,7 @@ function App() {
         <div className="panel-shell">
           <div
             className="panel-handle"
-            onMouseDown={(event) => handlePanelSwipeStart(event, true)}
-            onMouseUp={handlePanelSwipeEnd}
-            onTouchStart={(event) => handlePanelSwipeStart(event, true)}
-            onTouchEnd={handlePanelSwipeEnd}
+            onClick={toggleBottomPanel}
           >
             <div className="sheet-grabber" />
           </div>
@@ -719,10 +685,7 @@ function App() {
       {!bottomPanelVisible ? (
         <div
           className="restore-pill"
-          onMouseDown={(event) => handlePanelSwipeStart(event, false)}
-          onMouseUp={handlePanelSwipeEnd}
-          onTouchStart={(event) => handlePanelSwipeStart(event, false)}
-          onTouchEnd={handlePanelSwipeEnd}
+          onClick={toggleBottomPanel}
         >
           <div className="sheet-grabber" />
         </div>

@@ -20,18 +20,16 @@ npm run build
 npm run preview
 ```
 
-## Add Capacitor (Android)
+## Progressive Web App (Android Install)
 
-```bash
-npm install @capacitor/core @capacitor/cli
-npx cap init
-npx cap add android
-npm run build
-npx cap copy
-npx cap open android
-```
+- PWA manifest: `public/manifest.webmanifest`
+- Service worker: `public/sw.js`
+- Icons: `public/icons/icon-192.png`, `public/icons/icon-512.png`
+- Service worker registration: `src/main.jsx`
 
-When `npx cap init` asks for values:
-- App name: `Truck Maps Italy`
-- App ID example: `com.example.truckmapsitaly`
-- Web assets directory: `dist`
+To get the Android Chrome install prompt:
+1. Deploy on HTTPS.
+2. Open the site in Chrome on Android.
+3. Use enough engagement (or menu > `Install app`) to trigger install.
+
+App updates are delivered from the website automatically when users reload and the new web build is available.
