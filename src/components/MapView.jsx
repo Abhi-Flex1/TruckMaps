@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MARKER_TYPES } from "../services/storage";
@@ -13,6 +13,7 @@ function MapView({
   markers,
   routeGeometry,
   routeEndpoints,
+  truckRestrictions,
   userLocation,
   followUser,
   markMode,
@@ -29,6 +30,44 @@ function MapView({
   const markModeRef = useRef(markMode);
   const onFollowDisabledRef = useRef(onFollowDisabled);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const restrictionsGeoJson = useMemo(
+    () => ({
+      type: "FeatureCollection",
+      features: (truckRestrictions || [])
+        .filter((restriction) => Array.isArray(restriction.geometry) && restriction.geometry.length > 0)
+        .flatMap((restriction) => {
+          const coords = restriction.geometry.map((point) => [point.lon, point.lat]);
+          const firstPoint = restriction.geometry[0];
+          const lineFeature =
+            coords.length >= 2
+              ? [
+                  {
+                    type: "Feature",
+                    properties: { id: restriction.id, kind: "line" },
+                    geometry: {
+                      type: "LineString",
+                      coordinates: coords
+                    }
+                  }
+                ]
+              : [];
+          const pointFeature = firstPoint
+            ? [
+                {
+                  type: "Feature",
+                  properties: { id: restriction.id, kind: "point" },
+                  geometry: {
+                    type: "Point",
+                    coordinates: [firstPoint.lon, firstPoint.lat]
+                  }
+                }
+              ]
+            : [];
+          return [...lineFeature, ...pointFeature];
+        })
+    }),
+    [truckRestrictions]
+  );
 
   useEffect(() => {
     markModeRef.current = markMode;
@@ -89,6 +128,53 @@ function MapView({
           "line-color": "#0071e3",
           "line-width": 7.5,
           "line-opacity": 0.9
+        }
+      });
+      map.addSource("truck-restrictions", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: []
+        }
+      });
+      map.addLayer({
+        id: "truck-restrictions-line",
+        type: "line",
+        source: "truck-restrictions",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: {
+          "line-color": "#ff2b2b",
+          "line-width": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            8,
+            2.2,
+            14,
+            5.4
+          ],
+          "line-opacity": 0.78
+        }
+      });
+      map.addLayer({
+        id: "truck-restrictions-point",
+        type: "circle",
+        source: "truck-restrictions",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            8,
+            3.4,
+            14,
+            7.6
+          ],
+          "circle-color": "#ff2b2b",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.2,
+          "circle-opacity": 0.88
         }
       });
 
@@ -156,6 +242,14 @@ function MapView({
 
     source.setData(data);
   }, [isMapLoaded, routeGeometry]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapLoaded) return;
+    const source = map.getSource("truck-restrictions");
+    if (!source) return;
+    source.setData(restrictionsGeoJson);
+  }, [isMapLoaded, restrictionsGeoJson]);
 
   useEffect(() => {
     const map = mapRef.current;

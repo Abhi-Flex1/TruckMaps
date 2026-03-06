@@ -149,6 +149,45 @@ function expandBBox(bbox, paddingDeg = 0.06) {
   };
 }
 
+function buildBBoxGrid(bbox, latStep = 2.2, lonStep = 2.2) {
+  const tiles = [];
+  for (let south = bbox.south; south < bbox.north; south += latStep) {
+    const north = Math.min(bbox.north, south + latStep);
+    for (let west = bbox.west; west < bbox.east; west += lonStep) {
+      const east = Math.min(bbox.east, west + lonStep);
+      tiles.push({ south, west, north, east });
+    }
+  }
+  return tiles;
+}
+
+const ITALY_BBOX = {
+  south: 36.4,
+  west: 6.6,
+  north: 47.2,
+  east: 18.8
+};
+
+function clampLat(value) {
+  return Math.max(-85, Math.min(85, value));
+}
+
+function clampLon(value) {
+  const normalized = ((value + 180) % 360 + 360) % 360 - 180;
+  return Math.max(-180, Math.min(180, normalized));
+}
+
+function bboxFromMapBounds(bounds) {
+  const southWest = bounds.getSouthWest();
+  const northEast = bounds.getNorthEast();
+  return {
+    south: clampLat(southWest.lat),
+    west: clampLon(southWest.lng),
+    north: clampLat(northEast.lat),
+    east: clampLon(northEast.lng)
+  };
+}
+
 function routeNearRestriction(routeCoordinates, restrictionGeometry) {
   return restrictionGeometry.some(
     (point) => minDistanceToRouteMeters(point, routeCoordinates) <= 18
@@ -268,6 +307,7 @@ function App() {
   const [routeInfo, setRouteInfo] = useState(null);
   const [routeGeometry, setRouteGeometry] = useState(null);
   const [routeEndpoints, setRouteEndpoints] = useState(null);
+  const [mapRestrictions, setMapRestrictions] = useState([]);
   const [truckSettings, setTruckSettings] = useState(loadTruckSettings);
   const [userLocation, setUserLocation] = useState(null);
   const [navigationActive, setNavigationActive] = useState(false);
@@ -281,6 +321,10 @@ function App() {
   const spokenStepKeyRef = useRef("");
   const startAutocompleteIdRef = useRef(0);
   const destinationAutocompleteIdRef = useRef(0);
+  const countryRestrictionsRequestIdRef = useRef(0);
+  const viewportRestrictionsTimerRef = useRef(null);
+  const viewportRestrictionsRequestIdRef = useRef(0);
+  const restrictionMapRef = useRef(new Map());
 
   const speak = (text) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
@@ -301,6 +345,15 @@ function App() {
       ],
       { padding: 52, duration: 900 }
     );
+  };
+
+  const mergeRestrictionsIntoMap = (items) => {
+    if (!Array.isArray(items) || !items.length) return;
+    items.forEach((restriction) => {
+      if (!restriction?.id) return;
+      restrictionMapRef.current.set(restriction.id, restriction);
+    });
+    setMapRestrictions(Array.from(restrictionMapRef.current.values()));
   };
 
   const chooseAndApplyRoute = (cacheData, isRecalculation = false, finalAnalysis = true) => {
@@ -462,6 +515,64 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const requestId = Date.now();
+    countryRestrictionsRequestIdRef.current = requestId;
+    const tiles = buildBBoxGrid(ITALY_BBOX, 1.5, 1.5);
+
+    const loadCountryRestrictions = async () => {
+      // Sequential chunking is slower but substantially more reliable against Overpass throttling.
+      for (let i = 0; i < tiles.length; i += 1) {
+        const tile = tiles[i];
+        const result = await Promise.allSettled([fetchTruckRestrictionsForBBox(tile)]);
+        if (countryRestrictionsRequestIdRef.current !== requestId) return;
+        const fulfilled = result[0];
+        if (fulfilled.status === "fulfilled" && Array.isArray(fulfilled.value)) {
+          mergeRestrictionsIntoMap(fulfilled.value);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 220));
+      }
+    };
+
+    void loadCountryRestrictions();
+
+    return () => {
+      countryRestrictionsRequestIdRef.current = 0;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapObject) return undefined;
+
+    const fetchViewportRestrictions = async () => {
+      const requestId = Date.now();
+      viewportRestrictionsRequestIdRef.current = requestId;
+      const padded = expandBBox(bboxFromMapBounds(mapObject.getBounds()), 0.12);
+      try {
+        const restrictions = await fetchTruckRestrictionsForBBox(padded);
+        if (viewportRestrictionsRequestIdRef.current !== requestId) return;
+        mergeRestrictionsIntoMap(restrictions);
+      } catch {
+        // Keep previous data; viewport refresh is best-effort.
+      }
+    };
+
+    const scheduleViewportFetch = () => {
+      if (viewportRestrictionsTimerRef.current) clearTimeout(viewportRestrictionsTimerRef.current);
+      viewportRestrictionsTimerRef.current = setTimeout(() => {
+        void fetchViewportRestrictions();
+      }, 260);
+    };
+
+    scheduleViewportFetch();
+    mapObject.on("moveend", scheduleViewportFetch);
+
+    return () => {
+      mapObject.off("moveend", scheduleViewportFetch);
+      if (viewportRestrictionsTimerRef.current) clearTimeout(viewportRestrictionsTimerRef.current);
+    };
+  }, [mapObject]);
+
+  useEffect(() => {
     if (!navigationActive || !routeInfo || !userLocation) return;
     const nextStep = findNextStep(routeInfo, userLocation, currentStepIndex);
     if (!nextStep) return;
@@ -541,10 +652,10 @@ function App() {
     if (!userLocation || !mapObject) return;
     mapObject.easeTo({
       center: [userLocation.lon, userLocation.lat],
-      duration: 650,
-      zoom: Math.max(mapObject.getZoom(), 15.5),
+      duration: 760,
+      zoom: Math.max(mapObject.getZoom(), 17.6),
       bearing: Number.isFinite(userLocation.heading) ? userLocation.heading : mapObject.getBearing(),
-      pitch: 50
+      pitch: 58
     });
   };
 
@@ -552,13 +663,6 @@ function App() {
   const routeDurationMin = routeInfo ? Math.round(routeInfo.durationSeconds / 60) : null;
   const activeStep = routeInfo?.steps?.[currentStepIndex] || routeInfo?.steps?.[0] || null;
   const maneuverSymbol = stepSymbol(activeStep);
-  const statusLabel = routeLoading
-    ? "Calcolo percorso in corso..."
-    : navigationActive
-      ? "Navigazione attiva"
-      : routeInfo
-        ? "Percorso pronto"
-        : "Pronto per una nuova rotta";
 
   return (
     <div className="app-shell">
@@ -567,6 +671,7 @@ function App() {
         markers={markers}
         routeGeometry={routeGeometry}
         routeEndpoints={routeEndpoints}
+        truckRestrictions={mapRestrictions}
         userLocation={userLocation}
         followUser={followUser}
         markMode={markMode}
@@ -574,14 +679,6 @@ function App() {
         onMapReady={setMapObject}
         onFollowDisabled={() => setFollowUser(false)}
       />
-
-      <header className="top-hud">
-        <p className="hud-kicker">Truck Maps Italia</p>
-        <div className="hud-row">
-          <p className="hud-title">Navigator Pro</p>
-          <span className="hud-status">{statusLabel}</span>
-        </div>
-      </header>
 
       {navigationActive ? (
         <div className="turn-banner">
