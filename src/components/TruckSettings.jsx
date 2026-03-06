@@ -20,10 +20,10 @@ function TruckSettings({ initialValues, onSave }) {
   };
 
   return (
-    <div className="sheet-card">
-      <h3>Impostazioni Camion</h3>
-      <form onSubmit={handleSubmit}>
-        <label>
+    <>
+      <h3 className="section-title">Profilo camion</h3>
+      <form onSubmit={handleSubmit} className="truck-form">
+        <label className="field-label">
           Altezza (m)
           <input
             value={formState.height}
@@ -31,7 +31,7 @@ function TruckSettings({ initialValues, onSave }) {
             placeholder="4.0"
           />
         </label>
-        <label>
+        <label className="field-label">
           Peso (t)
           <input
             value={formState.weight}
@@ -39,7 +39,7 @@ function TruckSettings({ initialValues, onSave }) {
             placeholder="18"
           />
         </label>
-        <label>
+        <label className="field-label">
           Lunghezza (m)
           <input
             value={formState.length}
@@ -52,7 +52,7 @@ function TruckSettings({ initialValues, onSave }) {
         </button>
       </form>
       {saved ? <p className="small-text success-text">Salvato in locale.</p> : null}
-    </div>
+    </>
   );
 }
 

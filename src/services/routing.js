@@ -140,8 +140,13 @@ export async function fetchTruckRestrictionsForBBox(bbox) {
 [out:json][timeout:25];
 (
   way["highway"]["hgv"="no"](${south},${west},${north},${east});
+  way["highway"]["goods"="no"](${south},${west},${north},${east});
+  way["highway"]["access"="no"](${south},${west},${north},${east});
+  way["highway"]["vehicle"="no"](${south},${west},${north},${east});
   way["highway"]["motor_vehicle"="no"](${south},${west},${north},${east});
+  way["highway"]["maxheight:physical"](${south},${west},${north},${east});
   way["highway"]["maxheight"](${south},${west},${north},${east});
+  way["highway"]["maxaxleload"](${south},${west},${north},${east});
   way["highway"]["maxweight"](${south},${west},${north},${east});
   way["highway"]["maxlength"](${south},${west},${north},${east});
 );

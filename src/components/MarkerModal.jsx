@@ -16,7 +16,7 @@ function MarkerModal({ isOpen, onClose, onSave }) {
       <div className="modal-card">
         <h3>Aggiungi segnalazione</h3>
         <form onSubmit={handleSubmit}>
-          <label>
+          <label className="field-label">
             Tipo
             <select name="type" defaultValue="avoid">
               {Object.entries(MARKER_TYPES).map(([type, info]) => (
@@ -26,7 +26,7 @@ function MarkerModal({ isOpen, onClose, onSave }) {
               ))}
             </select>
           </label>
-          <label>
+          <label className="field-label">
             Nota (opzionale)
             <textarea name="note" rows="2" placeholder="Dettagli strada..." />
           </label>

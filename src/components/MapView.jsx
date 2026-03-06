@@ -18,7 +18,6 @@ function MapView({
   markMode,
   onMapTap,
   onMapReady,
-  onUserLocation,
   onFollowDisabled
 }) {
   const mapContainerRef = useRef(null);
@@ -28,17 +27,12 @@ function MapView({
   const userMarkerRef = useRef(null);
   const accuracySourceReadyRef = useRef(false);
   const markModeRef = useRef(markMode);
-  const onUserLocationRef = useRef(onUserLocation);
   const onFollowDisabledRef = useRef(onFollowDisabled);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
 
   useEffect(() => {
     markModeRef.current = markMode;
   }, [markMode]);
-
-  useEffect(() => {
-    onUserLocationRef.current = onUserLocation;
-  }, [onUserLocation]);
 
   useEffect(() => {
     onFollowDisabledRef.current = onFollowDisabled;
@@ -52,39 +46,24 @@ function MapView({
       style: {
         version: 8,
         sources: {
-          osm: {
+          cartoLight: {
             type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
             tileSize: 256,
-            attribution: "&copy; OpenStreetMap contributors"
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
           }
         },
         layers: [
           {
-            id: "osm-tiles",
+            id: "basemap",
             type: "raster",
-            source: "osm"
+            source: "cartoLight"
           }
         ]
       },
       center: [12.5674, 41.8719],
       zoom: 5.2
     });
-
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
-    const geolocateControl = new maplibregl.GeolocateControl({
-      positionOptions: { enableHighAccuracy: true },
-      trackUserLocation: true
-    });
-    geolocateControl.on("geolocate", (event) => {
-      const reportLocation = onUserLocationRef.current;
-      if (!reportLocation) return;
-      reportLocation({
-        lon: event.coords.longitude,
-        lat: event.coords.latitude
-      });
-    });
-    map.addControl(geolocateControl, "top-right");
 
     map.on("load", () => {
       // Route source/layer is managed once and only the GeoJSON data changes later.
@@ -93,12 +72,22 @@ function MapView({
         data: EMPTY_ROUTE
       });
       map.addLayer({
+        id: "route-casing",
+        type: "line",
+        source: "route",
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 11,
+          "line-opacity": 0.95
+        }
+      });
+      map.addLayer({
         id: "route-line",
         type: "line",
         source: "route",
         paint: {
-          "line-color": "#1f84ff",
-          "line-width": 7,
+          "line-color": "#0071e3",
+          "line-width": 7.5,
           "line-opacity": 0.9
         }
       });
@@ -267,7 +256,7 @@ function MapView({
         duration: 650,
         zoom: Math.max(map.getZoom(), 15.5),
         bearing: Number.isFinite(userLocation.heading) ? userLocation.heading : map.getBearing(),
-        pitch: 54
+        pitch: 50
       });
     }
   }, [followUser, isMapLoaded, userLocation]);

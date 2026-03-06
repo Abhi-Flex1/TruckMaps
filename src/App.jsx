@@ -101,9 +101,10 @@ function parseRestrictionValue(value) {
 
 function normalizeTruck(truckSettings) {
   return {
-    height: parseRestrictionValue(truckSettings.height),
-    weight: parseRestrictionValue(truckSettings.weight),
-    length: parseRestrictionValue(truckSettings.length)
+    // Conservative defaults help avoid unsafe roads when user did not fill all values.
+    height: parseRestrictionValue(truckSettings.height) ?? 4.0,
+    weight: parseRestrictionValue(truckSettings.weight) ?? 18,
+    length: parseRestrictionValue(truckSettings.length) ?? 12
   };
 }
 
@@ -131,24 +132,28 @@ function expandBBox(bbox, paddingDeg = 0.06) {
 }
 
 function routeNearRestriction(routeCoordinates, restrictionGeometry) {
-  for (let i = 0; i < routeCoordinates.length; i += 8) {
-    const point = { lon: routeCoordinates[i][0], lat: routeCoordinates[i][1] };
-    for (let j = 0; j < restrictionGeometry.length - 1; j += 1) {
-      const start = restrictionGeometry[j];
-      const end = restrictionGeometry[j + 1];
-      if (pointToSegmentMeters(point, start, end) <= 24) return true;
-    }
-  }
-  return false;
+  return restrictionGeometry.some(
+    (point) => minDistanceToRouteMeters(point, routeCoordinates) <= 30
+  );
 }
 
 function evaluateRestriction(tags, truck) {
-  if (tags.hgv === "no" || tags.motor_vehicle === "no") {
+  if (
+    tags.hgv === "no" ||
+    tags.goods === "no" ||
+    tags.access === "no" ||
+    tags.vehicle === "no" ||
+    tags.motor_vehicle === "no"
+  ) {
     return { severity: "hard", reason: "tratto stradale vietato ai camion" };
   }
-  const maxHeight = parseRestrictionValue(tags.maxheight);
+  const maxHeight = parseRestrictionValue(tags.maxheight ?? tags["maxheight:physical"]);
   if (maxHeight && truck.height && truck.height > maxHeight) {
     return { severity: "hard", reason: `altezza ${truck.height}m > ${maxHeight}m` };
+  }
+  const maxAxleLoad = parseRestrictionValue(tags.maxaxleload);
+  if (maxAxleLoad && truck.weight && truck.weight > maxAxleLoad) {
+    return { severity: "hard", reason: `carico asse ${truck.weight}t > ${maxAxleLoad}t` };
   }
   const maxWeight = parseRestrictionValue(tags.maxweight);
   if (maxWeight && truck.weight && truck.weight > maxWeight) {
@@ -164,18 +169,31 @@ function evaluateRestriction(tags, truck) {
 function analyzeCandidate(candidate, restrictions, truck) {
   const warnings = [];
   let hardCount = 0;
+  let closestRestrictionMeters = Infinity;
   restrictions.forEach((restriction) => {
     const evaluation = evaluateRestriction(restriction.tags, truck);
     if (!evaluation) return;
-    if (!routeNearRestriction(candidate.geometry.coordinates, restriction.geometry)) return;
-    hardCount += 1;
-    warnings.push(`Limite camion: ${evaluation.reason}`);
+    const distanceToRestriction = restriction.geometry.reduce((minDistance, point) => {
+      const distance = minDistanceToRouteMeters(point, candidate.geometry.coordinates);
+      return Math.min(minDistance, distance);
+    }, Infinity);
+
+    closestRestrictionMeters = Math.min(closestRestrictionMeters, distanceToRestriction);
+    if (distanceToRestriction <= 30 || routeNearRestriction(candidate.geometry.coordinates, restriction.geometry)) {
+      hardCount += 1;
+      warnings.push(`Limite camion: ${evaluation.reason}`);
+    }
   });
   return {
     ...candidate,
     hardCount,
     warnings,
-    score: hardCount * 1000 + candidate.distanceMeters / 1000,
+    closestRestrictionMeters,
+    // Safety-first score: heavy penalty for restrictions, then reward larger clearance.
+    score:
+      hardCount * 1000000 +
+      Math.max(0, 200 - Math.min(closestRestrictionMeters, 200)) * 1000 +
+      candidate.durationSeconds,
     steps: candidate.steps.map((step) => ({
       ...step,
       instruction: italianInstructionForStep(step)
@@ -207,6 +225,7 @@ function App() {
   const [markers, setMarkers] = useState(loadMarkers);
   const [mapTapLocation, setMapTapLocation] = useState(null);
   const [activeMode, setActiveMode] = useState("navigate");
+  const [bottomPanelVisible, setBottomPanelVisible] = useState(true);
   const [markMode, setMarkMode] = useState(false);
   const [followUser, setFollowUser] = useState(true);
   const [topSearch, setTopSearch] = useState("");
@@ -229,6 +248,11 @@ function App() {
   const [routingCache, setRoutingCache] = useState(null);
   const lastRerouteTsRef = useRef(0);
   const spokenStepKeyRef = useRef("");
+  const panelGestureRef = useRef({
+    startY: 0,
+    tracking: false,
+    originVisible: true
+  });
 
   const markerWarnings = routeGeometry
     ? markers.features
@@ -269,7 +293,27 @@ function App() {
     const analyzed = cacheData.candidates.map((candidate) =>
       analyzeCandidate(candidate, cacheData.restrictions, truck)
     );
-    const best = [...analyzed].sort((a, b) => a.score - b.score)[0];
+    const safeRoutes = analyzed.filter((candidate) => candidate.hardCount === 0);
+    if (safeRoutes.length === 0) {
+      setRouteInfo(null);
+      setRouteGeometry(null);
+      setRouteEndpoints(null);
+      setTruckWarnings([]);
+      setCurrentInstruction("");
+      setCurrentStepIndex(0);
+      setRouteHint("Nessun percorso camion-safe trovato. Prova una destinazione alternativa.");
+      setRouteError("Percorso bloccato: tutte le alternative includono strade non adatte ai camion.");
+      setNavigationActive(false);
+      return;
+    }
+
+    const best = [...safeRoutes].sort((a, b) => {
+      if (a.hardCount !== b.hardCount) return a.hardCount - b.hardCount;
+      const aClearance = Number.isFinite(a.closestRestrictionMeters) ? a.closestRestrictionMeters : Infinity;
+      const bClearance = Number.isFinite(b.closestRestrictionMeters) ? b.closestRestrictionMeters : Infinity;
+      if (aClearance !== bClearance) return bClearance - aClearance;
+      return a.durationSeconds - b.durationSeconds;
+    })[0];
     setRouteInfo(best);
     setRouteGeometry(best.geometry);
     setRouteEndpoints({
@@ -278,17 +322,15 @@ function App() {
     });
     setTruckWarnings(best.warnings.slice(0, 4));
     setRouteHint(
-      best.hardCount > 0
-        ? "Nessun percorso perfetto: mostrato il più sicuro disponibile."
-        : isRecalculation
-          ? "Percorso aggiornato ai limiti camion."
-          : "Percorso pronto. Premi Avvia."
+      isRecalculation
+        ? "Percorso aggiornato (priorità sicurezza)."
+        : "Percorso camion-safe pronto."
     );
+    setRouteError("");
     setCurrentStepIndex(0);
     setCurrentInstruction(best.steps?.[0]?.instruction || "");
     spokenStepKeyRef.current = "";
     fitMapToRoute(best.geometry);
-    setRouteError("");
   };
 
   const buildTruckAwareRoute = async (startPlace, destinationPlace) => {
@@ -389,8 +431,13 @@ function App() {
 
   const handleStartNavigation = () => {
     if (!routeInfo) return;
+    if (routeInfo.hardCount > 0) {
+      setRouteError("Navigazione bloccata: percorso non completamente camion-safe.");
+      return;
+    }
     setNavigationActive(true);
     setFollowUser(true);
+    setBottomPanelVisible(false);
     const firstInstruction = routeInfo.steps?.[0]?.instruction || "Continua dritto";
     setCurrentInstruction(firstInstruction);
     speak(`Navigazione avviata. ${firstInstruction}`);
@@ -433,20 +480,42 @@ function App() {
     saveTruckSettings(values);
   };
 
+  const getPointerY = (event) => {
+    if ("changedTouches" in event && event.changedTouches?.length) {
+      return event.changedTouches[0].clientY;
+    }
+    if ("touches" in event && event.touches?.length) {
+      return event.touches[0].clientY;
+    }
+    return event.clientY ?? 0;
+  };
+
+  const handlePanelSwipeStart = (event, originVisible) => {
+    panelGestureRef.current = {
+      startY: getPointerY(event),
+      tracking: true,
+      originVisible
+    };
+  };
+
+  const handlePanelSwipeEnd = (event) => {
+    const gesture = panelGestureRef.current;
+    if (!gesture.tracking) return;
+    const deltaY = getPointerY(event) - gesture.startY;
+    if (gesture.originVisible && deltaY > 40) {
+      setBottomPanelVisible(false);
+    } else if (!gesture.originVisible && deltaY < -30) {
+      setBottomPanelVisible(true);
+    }
+    panelGestureRef.current.tracking = false;
+  };
+
+  const routeDistanceKm = routeInfo ? (routeInfo.distanceMeters / 1000).toFixed(1) : null;
+  const routeDurationMin = routeInfo ? Math.round(routeInfo.durationSeconds / 60) : null;
+
   return (
     <div className="app-shell">
-      <div className="top-search minimal">
-        <form onSubmit={handleSearch}>
-          <input
-            value={topSearch}
-            onChange={(event) => setTopSearch(event.target.value)}
-            placeholder="Cerca..."
-          />
-          <button type="submit" className="pressable primary-btn">Vai</button>
-        </form>
-        {topSearchError ? <p className="inline-error">{topSearchError}</p> : null}
-      </div>
-
+      <div className="map-vignette" />
       <MapView
         markers={markers}
         routeGeometry={routeGeometry}
@@ -456,44 +525,81 @@ function App() {
         markMode={markMode}
         onMapTap={setMapTapLocation}
         onMapReady={setMapObject}
-        onUserLocation={setUserLocation}
         onFollowDisabled={() => setFollowUser(false)}
       />
 
-      <div className="floating-actions">
-        <button className="pressable secondary-btn" onClick={() => setFollowUser(true)}>
-          Segui me
-        </button>
-        <button className={`pressable ${voiceEnabled ? "primary-btn" : "secondary-btn"}`} onClick={() => setVoiceEnabled((s) => !s)}>
-          Voce {voiceEnabled ? "ON" : "OFF"}
-        </button>
-      </div>
+      <header className="command-deck">
+        <div className="brand-strip">
+          <p>Truck Maps Italia</p>
+          {routeInfo ? <span>{routeDistanceKm} km • {routeDurationMin} min</span> : <span>Nessun percorso attivo</span>}
+        </div>
+        <form onSubmit={handleSearch} className="search-bar">
+          <input
+            value={topSearch}
+            onChange={(event) => setTopSearch(event.target.value)}
+            placeholder="Cerca luogo, via o città"
+          />
+          <button type="submit" className="pressable primary-btn">Vai</button>
+        </form>
+        {topSearchError ? <p className="inline-error">{topSearchError}</p> : null}
+      </header>
+
+      {navigationActive ? (
+        <div className="turn-banner">
+          <p className="turn-label">Manovra successiva</p>
+          <p className="turn-instruction">{currentInstruction || "Procedi sul percorso"}</p>
+          <p className="turn-distance">Tra {Math.round(distanceToNextStepMeters)} m</p>
+        </div>
+      ) : null}
 
       {warnings.length ? (
-        <div className="warnings-panel compact">
+        <div className="alert-stack">
+          <p className="warnings-title">Avvisi percorso</p>
           {warnings.slice(0, 3).map((warning) => (
             <p key={warning}>{warning}</p>
           ))}
         </div>
       ) : null}
 
-      <div className="bottom-panel">
-        <div className="sheet-card minimal-sheet">
-          <div className="mode-switch">
+      <div className="fab-column">
+        <button className="pressable map-chip-btn" onClick={() => setFollowUser(true)}>
+          Segui
+        </button>
+        <button
+          className={`pressable map-chip-btn ${voiceEnabled ? "is-on" : ""}`}
+          onClick={() => setVoiceEnabled((s) => !s)}
+        >
+          Voce
+        </button>
+      </div>
+
+      <section className={bottomPanelVisible ? "control-stage" : "control-stage hidden"}>
+        <div className="panel-shell">
+          <div
+            className="panel-handle"
+            onMouseDown={(event) => handlePanelSwipeStart(event, true)}
+            onMouseUp={handlePanelSwipeEnd}
+            onTouchStart={(event) => handlePanelSwipeStart(event, true)}
+            onTouchEnd={handlePanelSwipeEnd}
+          >
+            <div className="sheet-grabber" />
+          </div>
+
+          <div className="mode-tabs">
             <button
-              className={`pressable ${activeMode === "navigate" ? "active" : "secondary-btn"}`}
+              className={`pressable mode-tab ${activeMode === "navigate" ? "active" : ""}`}
               onClick={() => setActiveMode("navigate")}
             >
               Naviga
             </button>
             <button
-              className={`pressable ${activeMode === "truck" ? "active" : "secondary-btn"}`}
+              className={`pressable mode-tab ${activeMode === "truck" ? "active" : ""}`}
               onClick={() => setActiveMode("truck")}
             >
               Limiti
             </button>
             <button
-              className={`pressable ${activeMode === "marks" ? "active" : "secondary-btn"}`}
+              className={`pressable mode-tab ${activeMode === "marks" ? "active" : ""}`}
               onClick={() => setActiveMode("marks")}
             >
               Segnali
@@ -501,9 +607,10 @@ function App() {
           </div>
 
           {activeMode === "navigate" ? (
-            <div className="quick-flow">
+            <div className="mode-pane">
+              <h3 className="pane-title">Percorso camion</h3>
               <p className="quick-hint">{routeHint}</p>
-              <label>
+              <label className="field-label">
                 Partenza
                 <input
                   value={routeForm.start}
@@ -511,7 +618,7 @@ function App() {
                   placeholder={userLocation ? "Mia posizione o città" : "Città di partenza"}
                 />
               </label>
-              <label>
+              <label className="field-label">
                 Destinazione
                 <input
                   value={routeForm.destination}
@@ -537,9 +644,16 @@ function App() {
 
               {routeInfo ? (
                 <>
-                  <p className="small-text strong-text">
-                    {(routeInfo.distanceMeters / 1000).toFixed(1)} km | {(routeInfo.durationSeconds / 60).toFixed(0)} min
-                  </p>
+                  <div className="metric-grid">
+                    <div>
+                      <p className="metric-label">Distanza</p>
+                      <p className="metric-value">{routeDistanceKm} km</p>
+                    </div>
+                    <div>
+                      <p className="metric-label">Tempo</p>
+                      <p className="metric-value">{routeDurationMin} min</p>
+                    </div>
+                  </div>
                   <div className="nav-controls">
                     {!navigationActive ? (
                       <button className="pressable primary-btn" onClick={handleStartNavigation}>
@@ -550,9 +664,6 @@ function App() {
                         Ferma
                       </button>
                     )}
-                    <button className="pressable secondary-btn" onClick={() => setFollowUser(true)}>
-                      Re-centra
-                    </button>
                   </div>
                   {navigationActive && currentInstruction ? (
                     <div className="next-step-card">
@@ -567,11 +678,14 @@ function App() {
           ) : null}
 
           {activeMode === "truck" ? (
-            <TruckSettings initialValues={truckSettings} onSave={handleSaveTruckSettings} />
+            <div className="mode-pane">
+              <TruckSettings initialValues={truckSettings} onSave={handleSaveTruckSettings} />
+            </div>
           ) : null}
 
           {activeMode === "marks" ? (
-            <div className="quick-flow">
+            <div className="mode-pane">
+              <h3 className="pane-title">Segnalazioni locali</h3>
               <p className="quick-hint">Attiva “Segna” e tocca la mappa per aggiungere segnalazioni utili ai camion.</p>
               <button
                 className={`pressable ${markMode ? "primary-btn" : "secondary-btn"}`}
@@ -600,7 +714,19 @@ function App() {
             </div>
           ) : null}
         </div>
-      </div>
+      </section>
+
+      {!bottomPanelVisible ? (
+        <div
+          className="restore-pill"
+          onMouseDown={(event) => handlePanelSwipeStart(event, false)}
+          onMouseUp={handlePanelSwipeEnd}
+          onTouchStart={(event) => handlePanelSwipeStart(event, false)}
+          onTouchEnd={handlePanelSwipeEnd}
+        >
+          <div className="sheet-grabber" />
+        </div>
+      ) : null}
 
       <MarkerModal
         isOpen={Boolean(mapTapLocation)}
