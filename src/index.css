@@ -179,7 +179,7 @@ button:disabled {
 
 .turn-banner {
   position: absolute;
-  top: 126px;
+  top: 16px;
   left: 50%;
   transform: translateX(-50%);
   width: min(760px, calc(100% - 26px));
@@ -214,7 +214,7 @@ button:disabled {
 .alert-stack {
   position: absolute;
   right: 16px;
-  top: 184px;
+  top: 86px;
   width: min(360px, calc(100% - 32px));
   z-index: 35;
   border-radius: 16px;
@@ -351,6 +351,36 @@ button:disabled {
   gap: 5px;
   font-size: 12px;
   color: var(--muted);
+  position: relative;
+}
+
+.autocomplete-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 6px;
+  border: 1px solid rgba(45, 67, 96, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 18px rgba(21, 38, 61, 0.14);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.autocomplete-item {
+  text-align: left;
+  border-radius: 10px;
+  border: 0;
+  background: #f4f8ff;
+  color: #1f3755;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.autocomplete-item:hover {
+  background: #e7f0ff;
 }
 
 .route-actions-row {
@@ -618,7 +648,7 @@ button:disabled {
   }
 
   .alert-stack {
-    top: 206px;
+    top: 88px;
   }
 }
 
@@ -634,7 +664,7 @@ button:disabled {
   }
 
   .turn-banner {
-    top: 118px;
+    top: 10px;
     width: calc(100% - 18px);
   }
 
@@ -667,7 +697,7 @@ button:disabled {
   .alert-stack {
     left: 9px;
     right: 9px;
-    top: 184px;
+    top: 74px;
     width: auto;
   }
 }

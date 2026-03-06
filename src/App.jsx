@@ -3,6 +3,7 @@ import MapView from "./components/MapView";
 import MarkerModal from "./components/MarkerModal";
 import TruckSettings from "./components/TruckSettings";
 import {
+  autocompletePlaces,
   fetchRouteCandidates,
   fetchTruckRestrictionsForBBox,
   geocodePlace
@@ -133,19 +134,16 @@ function expandBBox(bbox, paddingDeg = 0.06) {
 
 function routeNearRestriction(routeCoordinates, restrictionGeometry) {
   return restrictionGeometry.some(
-    (point) => minDistanceToRouteMeters(point, routeCoordinates) <= 30
+    (point) => minDistanceToRouteMeters(point, routeCoordinates) <= 18
   );
 }
 
 function evaluateRestriction(tags, truck) {
-  if (
-    tags.hgv === "no" ||
-    tags.goods === "no" ||
-    tags.access === "no" ||
-    tags.vehicle === "no" ||
-    tags.motor_vehicle === "no"
-  ) {
+  if (tags.hgv === "no" || tags.goods === "no" || tags.motor_vehicle === "no") {
     return { severity: "hard", reason: "tratto stradale vietato ai camion" };
+  }
+  if (tags.access === "no" || tags.vehicle === "no") {
+    return { severity: "soft", reason: "possibile limitazione accesso veicoli" };
   }
   const maxHeight = parseRestrictionValue(tags.maxheight ?? tags["maxheight:physical"]);
   if (maxHeight && truck.height && truck.height > maxHeight) {
@@ -166,9 +164,15 @@ function evaluateRestriction(tags, truck) {
   return null;
 }
 
+function isAutostradaStep(step) {
+  const name = (step?.name || "").toLowerCase();
+  return /\ba\d+\b/.test(name) || name.includes("autostrada") || name.includes("raccordo");
+}
+
 function analyzeCandidate(candidate, restrictions, truck) {
   const warnings = [];
   let hardCount = 0;
+  let softCount = 0;
   let closestRestrictionMeters = Infinity;
   restrictions.forEach((restriction) => {
     const evaluation = evaluateRestriction(restriction.tags, truck);
@@ -179,20 +183,30 @@ function analyzeCandidate(candidate, restrictions, truck) {
     }, Infinity);
 
     closestRestrictionMeters = Math.min(closestRestrictionMeters, distanceToRestriction);
-    if (distanceToRestriction <= 30 || routeNearRestriction(candidate.geometry.coordinates, restriction.geometry)) {
-      hardCount += 1;
-      warnings.push(`Limite camion: ${evaluation.reason}`);
+    if (distanceToRestriction <= 18 || routeNearRestriction(candidate.geometry.coordinates, restriction.geometry)) {
+      if (evaluation.severity === "hard") {
+        hardCount += 1;
+        warnings.push(`Limite camion: ${evaluation.reason}`);
+      } else {
+        softCount += 1;
+        warnings.push(`Attenzione: ${evaluation.reason}`);
+      }
     }
   });
+  const autostradaSteps = candidate.steps.filter((step) => isAutostradaStep(step)).length;
   return {
     ...candidate,
     hardCount,
+    softCount,
+    autostradaSteps,
     warnings,
     closestRestrictionMeters,
-    // Safety-first score: heavy penalty for restrictions, then reward larger clearance.
+    // Prefer safer routes, then routes that keep major highways when possible.
     score:
-      hardCount * 1000000 +
-      Math.max(0, 200 - Math.min(closestRestrictionMeters, 200)) * 1000 +
+      hardCount * 300000 +
+      softCount * 40000 +
+      Math.max(0, 160 - Math.min(closestRestrictionMeters, 160)) * 900 -
+      autostradaSteps * 2500 +
       candidate.durationSeconds,
     steps: candidate.steps.map((step) => ({
       ...step,
@@ -228,9 +242,9 @@ function App() {
   const [bottomPanelVisible, setBottomPanelVisible] = useState(true);
   const [markMode, setMarkMode] = useState(false);
   const [followUser, setFollowUser] = useState(true);
-  const [topSearch, setTopSearch] = useState("");
-  const [topSearchError, setTopSearchError] = useState("");
   const [routeForm, setRouteForm] = useState({ start: "", destination: "" });
+  const [startSuggestions, setStartSuggestions] = useState([]);
+  const [destinationSuggestions, setDestinationSuggestions] = useState([]);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState("");
   const [routeHint, setRouteHint] = useState("1) Inserisci destinazione  2) Calcola  3) Avvia navigazione");
@@ -248,6 +262,8 @@ function App() {
   const [routingCache, setRoutingCache] = useState(null);
   const lastRerouteTsRef = useRef(0);
   const spokenStepKeyRef = useRef("");
+  const startAutocompleteIdRef = useRef(0);
+  const destinationAutocompleteIdRef = useRef(0);
 
   const markerWarnings = routeGeometry
     ? markers.features
@@ -288,27 +304,9 @@ function App() {
     const analyzed = cacheData.candidates.map((candidate) =>
       analyzeCandidate(candidate, cacheData.restrictions, truck)
     );
-    const safeRoutes = analyzed.filter((candidate) => candidate.hardCount === 0);
-    if (safeRoutes.length === 0) {
-      setRouteInfo(null);
-      setRouteGeometry(null);
-      setRouteEndpoints(null);
-      setTruckWarnings([]);
-      setCurrentInstruction("");
-      setCurrentStepIndex(0);
-      setRouteHint("Nessun percorso camion-safe trovato. Prova una destinazione alternativa.");
-      setRouteError("Percorso bloccato: tutte le alternative includono strade non adatte ai camion.");
-      setNavigationActive(false);
-      return;
-    }
+    const best = [...analyzed].sort((a, b) => a.score - b.score)[0];
+    if (!best) return;
 
-    const best = [...safeRoutes].sort((a, b) => {
-      if (a.hardCount !== b.hardCount) return a.hardCount - b.hardCount;
-      const aClearance = Number.isFinite(a.closestRestrictionMeters) ? a.closestRestrictionMeters : Infinity;
-      const bClearance = Number.isFinite(b.closestRestrictionMeters) ? b.closestRestrictionMeters : Infinity;
-      if (aClearance !== bClearance) return bClearance - aClearance;
-      return a.durationSeconds - b.durationSeconds;
-    })[0];
     setRouteInfo(best);
     setRouteGeometry(best.geometry);
     setRouteEndpoints({
@@ -316,12 +314,16 @@ function App() {
       destination: cacheData.snappedDestination
     });
     setTruckWarnings(best.warnings.slice(0, 4));
-    setRouteHint(
-      isRecalculation
-        ? "Percorso aggiornato (priorità sicurezza)."
-        : "Percorso camion-safe pronto."
-    );
-    setRouteError("");
+    if (best.hardCount > 0) {
+      setRouteHint("Percorso trovato con possibili limiti camion: verifica gli avvisi.");
+      setRouteError("Attenzione: non risultano alternative totalmente truck-safe in questa zona.");
+    } else if (isRecalculation) {
+      setRouteHint("Percorso aggiornato (priorità sicurezza).");
+      setRouteError("");
+    } else {
+      setRouteHint("Percorso pronto.");
+      setRouteError("");
+    }
     setCurrentStepIndex(0);
     setCurrentInstruction(best.steps?.[0]?.instruction || "");
     spokenStepKeyRef.current = "";
@@ -384,6 +386,48 @@ function App() {
   }, [truckSettings.height, truckSettings.weight, truckSettings.length]);
 
   useEffect(() => {
+    const query = routeForm.start.trim();
+    if (!query || query.toLowerCase() === "mia posizione" || query.length < 2) {
+      setStartSuggestions([]);
+      return;
+    }
+    const requestId = Date.now();
+    startAutocompleteIdRef.current = requestId;
+    const timeout = setTimeout(async () => {
+      try {
+        const items = await autocompletePlaces(query, 5);
+        if (startAutocompleteIdRef.current !== requestId) return;
+        setStartSuggestions(items);
+      } catch {
+        if (startAutocompleteIdRef.current !== requestId) return;
+        setStartSuggestions([]);
+      }
+    }, 220);
+    return () => clearTimeout(timeout);
+  }, [routeForm.start]);
+
+  useEffect(() => {
+    const query = routeForm.destination.trim();
+    if (!query || query.length < 2) {
+      setDestinationSuggestions([]);
+      return;
+    }
+    const requestId = Date.now();
+    destinationAutocompleteIdRef.current = requestId;
+    const timeout = setTimeout(async () => {
+      try {
+        const items = await autocompletePlaces(query, 5);
+        if (destinationAutocompleteIdRef.current !== requestId) return;
+        setDestinationSuggestions(items);
+      } catch {
+        if (destinationAutocompleteIdRef.current !== requestId) return;
+        setDestinationSuggestions([]);
+      }
+    }, 220);
+    return () => clearTimeout(timeout);
+  }, [routeForm.destination]);
+
+  useEffect(() => {
     if (!navigator.geolocation) return undefined;
     const watcher = navigator.geolocation.watchPosition(
       (position) => {
@@ -426,10 +470,6 @@ function App() {
 
   const handleStartNavigation = () => {
     if (!routeInfo) return;
-    if (routeInfo.hardCount > 0) {
-      setRouteError("Navigazione bloccata: percorso non completamente camion-safe.");
-      return;
-    }
     setNavigationActive(true);
     setFollowUser(true);
     setBottomPanelVisible(false);
@@ -442,21 +482,6 @@ function App() {
     setNavigationActive(false);
     setCurrentInstruction("");
     if (window.speechSynthesis) window.speechSynthesis.cancel();
-  };
-
-  const handleSearch = async (event) => {
-    event.preventDefault();
-    setTopSearchError("");
-    try {
-      const place = await geocodePlace(topSearch);
-      if (!place || !mapObject) {
-        setTopSearchError("Località non trovata.");
-        return;
-      }
-      mapObject.flyTo({ center: [place.lon, place.lat], zoom: 12, duration: 700 });
-    } catch {
-      setTopSearchError("Ricerca non disponibile.");
-    }
   };
 
   const handleSaveMarker = ({ type, note }) => {
@@ -496,22 +521,6 @@ function App() {
         onMapReady={setMapObject}
         onFollowDisabled={() => setFollowUser(false)}
       />
-
-      <header className="command-deck">
-        <div className="brand-strip">
-          <p>Truck Maps Italia</p>
-          {routeInfo ? <span>{routeDistanceKm} km • {routeDurationMin} min</span> : <span>Nessun percorso attivo</span>}
-        </div>
-        <form onSubmit={handleSearch} className="search-bar">
-          <input
-            value={topSearch}
-            onChange={(event) => setTopSearch(event.target.value)}
-            placeholder="Cerca luogo, via o città"
-          />
-          <button type="submit" className="pressable primary-btn">Vai</button>
-        </form>
-        {topSearchError ? <p className="inline-error">{topSearchError}</p> : null}
-      </header>
 
       {navigationActive ? (
         <div className="turn-banner">
@@ -583,6 +592,23 @@ function App() {
                   onChange={(e) => setRouteForm((c) => ({ ...c, start: e.target.value }))}
                   placeholder={userLocation ? "Mia posizione o città" : "Città di partenza"}
                 />
+                {startSuggestions.length ? (
+                  <div className="autocomplete-list">
+                    {startSuggestions.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className="autocomplete-item"
+                        onClick={() => {
+                          setRouteForm((current) => ({ ...current, start: item }));
+                          setStartSuggestions([]);
+                        }}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </label>
               <label className="field-label">
                 Destinazione
@@ -591,6 +617,23 @@ function App() {
                   onChange={(e) => setRouteForm((c) => ({ ...c, destination: e.target.value }))}
                   placeholder="Dove vuoi andare?"
                 />
+                {destinationSuggestions.length ? (
+                  <div className="autocomplete-list">
+                    {destinationSuggestions.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className="autocomplete-item"
+                        onClick={() => {
+                          setRouteForm((current) => ({ ...current, destination: item }));
+                          setDestinationSuggestions([]);
+                        }}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </label>
               <div className="route-actions-row">
                 <button className="pressable secondary-btn" onClick={() => setRouteForm((c) => ({ ...c, start: "Mia posizione" }))}>

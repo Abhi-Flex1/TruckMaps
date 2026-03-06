@@ -46,18 +46,18 @@ function MapView({
       style: {
         version: 8,
         sources: {
-          cartoLight: {
+          osm: {
             type: "raster",
-            tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
             tileSize: 256,
-            attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+            attribution: "&copy; OpenStreetMap contributors"
           }
         },
         layers: [
           {
             id: "basemap",
             type: "raster",
-            source: "cartoLight"
+            source: "osm"
           }
         ]
       },

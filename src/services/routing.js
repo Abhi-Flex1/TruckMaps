@@ -78,6 +78,35 @@ export async function geocodePlace(query) {
   };
 }
 
+export async function autocompletePlaces(query, limit = 5) {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return [];
+
+  const url = new URL(NOMINATIM_URL);
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("countrycodes", "it");
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("bounded", "1");
+  url.searchParams.set("viewbox", ITALY_VIEWBOX);
+  url.searchParams.set("q", trimmed);
+
+  const results = await fetchJsonWithTimeout(url, 9000);
+  if (!Array.isArray(results)) return [];
+
+  const seen = new Set();
+  return results
+    .map((item) => item?.display_name?.trim())
+    .filter(Boolean)
+    .filter((name) => {
+      const key = name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
 export async function snapToRoad(point) {
   const url = `${OSRM_BASE_URL}/nearest/v1/driving/${point.lon},${point.lat}?number=1`;
   const data = await fetchJsonWithTimeout(url);
