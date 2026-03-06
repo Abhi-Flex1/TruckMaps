@@ -92,6 +92,23 @@ function italianInstructionForStep(step) {
   return `Prosegui${via}`;
 }
 
+function stepSymbol(step) {
+  const type = step?.maneuver?.type || "";
+  const modifier = step?.maneuver?.modifier || "";
+  if (type === "depart") return "↑";
+  if (type === "arrive") return "◎";
+  if (type === "roundabout") return "⟳";
+  if (type === "turn") {
+    if (modifier === "left" || modifier === "slight left" || modifier === "sharp left") return "↰";
+    if (modifier === "right" || modifier === "slight right" || modifier === "sharp right") return "↱";
+    if (modifier === "uturn") return "↺";
+  }
+  if (type === "merge") return "⇢";
+  if (type === "on ramp") return "⤴";
+  if (type === "off ramp") return "⤵";
+  return "↑";
+}
+
 function parseRestrictionValue(value) {
   if (!value) return null;
   const normalized = String(value).toLowerCase().replace(",", ".");
@@ -231,7 +248,7 @@ function findNextStep(routeInfo, userLocation, currentStepIndex) {
     lon: step.maneuver.location[0],
     lat: step.maneuver.location[1]
   });
-  return { index: idx, instruction: step.instruction, distanceMeters: stepDistance };
+  return { index: idx, instruction: step.instruction, distanceMeters: stepDistance, step };
 }
 
 function App() {
@@ -256,6 +273,7 @@ function App() {
   const [userLocation, setUserLocation] = useState(null);
   const [navigationActive, setNavigationActive] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [showVoicePrompt, setShowVoicePrompt] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [currentInstruction, setCurrentInstruction] = useState("");
   const [distanceToNextStepMeters, setDistanceToNextStepMeters] = useState(0);
@@ -299,7 +317,7 @@ function App() {
     );
   };
 
-  const chooseAndApplyRoute = (cacheData, isRecalculation = false) => {
+  const chooseAndApplyRoute = (cacheData, isRecalculation = false, finalAnalysis = true) => {
     const truck = normalizeTruck(truckSettings);
     const analyzed = cacheData.candidates.map((candidate) =>
       analyzeCandidate(candidate, cacheData.restrictions, truck)
@@ -313,8 +331,11 @@ function App() {
       start: cacheData.snappedStart,
       destination: cacheData.snappedDestination
     });
-    setTruckWarnings(best.warnings.slice(0, 4));
-    if (best.hardCount > 0) {
+    setTruckWarnings(finalAnalysis ? best.warnings.slice(0, 4) : []);
+    if (!finalAnalysis) {
+      setRouteHint("Percorso trovato. Verifica limiti camion in corso...");
+      setRouteError("");
+    } else if (best.hardCount > 0) {
       setRouteHint("Percorso trovato con possibili limiti camion: verifica gli avvisi.");
       setRouteError("Attenzione: non risultano alternative totalmente truck-safe in questa zona.");
     } else if (isRecalculation) {
@@ -332,6 +353,11 @@ function App() {
 
   const buildTruckAwareRoute = async (startPlace, destinationPlace) => {
     const routeData = await fetchRouteCandidates(startPlace, destinationPlace);
+    const quickCache = { ...routeData, restrictions: [], startPlace, destinationPlace };
+    setRoutingCache(quickCache);
+    chooseAndApplyRoute(quickCache, false, false);
+    setShowVoicePrompt(!navigationActive);
+
     let mergedBBox = getGeometryBBox(routeData.candidates[0].geometry.coordinates);
     routeData.candidates.slice(1).forEach((candidate) => {
       const box = getGeometryBBox(candidate.geometry.coordinates);
@@ -342,15 +368,24 @@ function App() {
         maxLat: Math.max(mergedBBox.maxLat, box.maxLat)
       };
     });
-    let restrictions = [];
-    try {
-      restrictions = await fetchTruckRestrictionsForBBox(expandBBox(mergedBBox));
-    } catch {
-      restrictions = [];
-    }
-    const cacheData = { ...routeData, restrictions, startPlace, destinationPlace };
-    setRoutingCache(cacheData);
-    chooseAndApplyRoute(cacheData);
+    const resolveRestrictions = async () => {
+      let restrictions = [];
+      try {
+        restrictions = await Promise.race([
+          fetchTruckRestrictionsForBBox(expandBBox(mergedBBox)),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Restriction timeout")), 9000)
+          )
+        ]);
+      } catch {
+        restrictions = [];
+      }
+      const cacheData = { ...routeData, restrictions, startPlace, destinationPlace };
+      setRoutingCache(cacheData);
+      chooseAndApplyRoute(cacheData, true, true);
+    };
+
+    void resolveRestrictions();
   };
 
   const handleRouteRequest = async () => {
@@ -473,6 +508,7 @@ function App() {
     setNavigationActive(true);
     setFollowUser(true);
     setBottomPanelVisible(false);
+    setShowVoicePrompt(false);
     const firstInstruction = routeInfo.steps?.[0]?.instruction || "Continua dritto";
     setCurrentInstruction(firstInstruction);
     speak(`Navigazione avviata. ${firstInstruction}`);
@@ -506,6 +542,8 @@ function App() {
 
   const routeDistanceKm = routeInfo ? (routeInfo.distanceMeters / 1000).toFixed(1) : null;
   const routeDurationMin = routeInfo ? Math.round(routeInfo.durationSeconds / 60) : null;
+  const activeStep = routeInfo?.steps?.[currentStepIndex] || routeInfo?.steps?.[0] || null;
+  const maneuverSymbol = stepSymbol(activeStep);
 
   return (
     <div className="app-shell">
@@ -524,9 +562,12 @@ function App() {
 
       {navigationActive ? (
         <div className="turn-banner">
-          <p className="turn-label">Manovra successiva</p>
-          <p className="turn-instruction">{currentInstruction || "Procedi sul percorso"}</p>
-          <p className="turn-distance">Tra {Math.round(distanceToNextStepMeters)} m</p>
+          <div className="turn-symbol">{maneuverSymbol}</div>
+          <div className="turn-copy">
+            <p className="turn-label">Manovra successiva</p>
+            <p className="turn-instruction">{currentInstruction || "Procedi sul percorso"}</p>
+            <p className="turn-distance">Tra {Math.round(distanceToNextStepMeters)} m</p>
+          </div>
         </div>
       ) : null}
 
@@ -539,17 +580,9 @@ function App() {
         </div>
       ) : null}
 
-      <div className="fab-column">
-        <button className="pressable map-chip-btn" onClick={() => setFollowUser(true)}>
-          Segui
-        </button>
-        <button
-          className={`pressable map-chip-btn ${voiceEnabled ? "is-on" : ""}`}
-          onClick={() => setVoiceEnabled((s) => !s)}
-        >
-          Voce
-        </button>
-      </div>
+      <button className="pressable recenter-orb" onClick={() => setFollowUser(true)} title="Riposiziona su di me">
+        ↗
+      </button>
 
       <section className={bottomPanelVisible ? "control-stage" : "control-stage hidden"}>
         <div className="panel-shell">
@@ -674,6 +707,34 @@ function App() {
                       </button>
                     )}
                   </div>
+                  {showVoicePrompt && !navigationActive ? (
+                    <div className="voice-ask-card">
+                      <p className="voice-ask-title">Guida vocale</p>
+                      <p className="voice-ask-body">Vuoi attivare le istruzioni vocali per questo percorso?</p>
+                      <div className="voice-ask-actions">
+                        <button
+                          type="button"
+                          className="pressable secondary-btn"
+                          onClick={() => {
+                            setVoiceEnabled(false);
+                            setShowVoicePrompt(false);
+                          }}
+                        >
+                          No
+                        </button>
+                        <button
+                          type="button"
+                          className="pressable primary-btn"
+                          onClick={() => {
+                            setVoiceEnabled(true);
+                            setShowVoicePrompt(false);
+                          }}
+                        >
+                          Si, attiva
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   {navigationActive && currentInstruction ? (
                     <div className="next-step-card">
                       <p className="next-label">Prossima manovra</p>
