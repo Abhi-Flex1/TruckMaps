@@ -2,97 +2,122 @@
 
 ## Purpose
 This document is a full handoff for another coding agent to continue work quickly.
-It describes the app architecture, implemented behavior, key files, recent major changes, current constraints, and recommended next steps.
+It captures the current architecture, behavior, key files, recent major changes, constraints, and recommended next steps.
 
 ## Project Identity
 - Name: `truck-maps-italy`
 - Type: React + Vite web app with PWA install support
 - Scope: Italy-only truck navigation support, no backend
-- Data model: all local (localStorage), plus live data from public APIs
+- Data model: local-only state (`localStorage`) plus live public API data
 
 ## Tech Stack
 - React 19 + Vite
 - MapLibre GL JS
-- OpenStreetMap raster tiles
+- OpenStreetMap raster tiles (`tile.openstreetmap.org`)
 - OSRM public API (routing + nearest)
-- Nominatim (search/geocoding)
+- Nominatim (geocoding + autocomplete)
 - Overpass API (truck restriction tags)
 - Web APIs:
   - Geolocation (`watchPosition`)
   - Speech Synthesis (`SpeechSynthesis`, Italian voice)
-  - Optional vibration (`navigator.vibrate`)
+  - Service Worker + Web App Manifest (PWA)
 
 ## Run / Build
 - Install: `npm install`
 - Dev: `npm run dev`
 - Build: `npm run build`
 - Preview: `npm run preview`
-- PWA assets:
-  - `public/manifest.webmanifest`
-  - `public/sw.js`
-  - `public/icons/*`
+
+## PWA Setup (Current)
+- Manifest: `public/manifest.webmanifest`
+- Service worker: `public/sw.js`
+- Icons: `public/icons/icon-192.png`, `public/icons/icon-512.png`
+- SW registration: `src/main.jsx`
+  - On localhost/127.0.0.1/::1, existing service workers are unregistered to avoid stale-cache blank screen during dev.
+  - On non-localhost, SW is registered normally.
+- `index.html` includes:
+  - manifest link
+  - theme color
+  - apple touch icon/web-app meta tags
 
 ## Current UX (Latest)
 - App language: Italian
-- Minimal Apple Maps-inspired visual style maintained
-- Live map with:
-  - custom user blue dot
-  - animated pulse
-  - accuracy circle
-  - follow-mode camera updates while moving
-- Bottom panel:
-  - hide/show via swipe gesture only (gray grabber line)
-  - no explicit hide/show button
-  - when hidden, collapsed grabber appears for swipe-up restore
-- Navigation start behavior:
-  - pressing `Avvia` auto-hides bottom panel
-  - top navigation header appears and stays visible (cannot be hidden during active nav)
-  - header shows active instruction + distance to next maneuver
+- Major redesign completed (custom map HUD style)
+- Top free-search bar removed from UI
+- Active navigation header (`turn-banner`) now includes maneuver symbol + instruction + distance
+- Bottom control panel:
+  - modes: `Naviga / Limiti / Segnali`
+  - top black handle now toggles hide/show on press (no swipe)
+  - restore pill appears when hidden; press to restore
+- Floating control:
+  - old `Segui` and `Voce` chips removed
+  - replaced with single circular recenter arrow button (`recenter-orb`) above bottom panel
+- Voice flow:
+  - after route calculation, app asks user whether to enable voice guidance for that route
+  - separate always-visible voice toggle removed
 
-## User Modes
-- `Naviga`
-- `Limiti`
-- `Segnali`
+## Route Input UX (Autocomplete)
+- Start and destination fields in `Naviga` mode now have autocomplete dropdowns
+- Suggestions come from Nominatim (Italy-bounded)
+- Debounced requests with stale-response protection via request ids
+- Selecting a suggestion fills the field and closes suggestions
 
-These are inside the bottom sheet when visible.
-
-## Truck Safety Logic (Current)
-- Safety is prioritized over speed.
-- Route candidates fetched from OSRM alternatives.
-- Overpass restrictions fetched for route envelope.
-- Restriction tags currently considered include:
+## Routing and Safety Logic (Current)
+- Route candidates fetched from OSRM alternatives (`alternatives=3`, `steps=true`)
+- Start/destination snapped to road via OSRM nearest
+- Restriction data fetched from Overpass in route envelope
+- Restriction tags considered:
   - `hgv=no`
   - `goods=no`
+  - `motor_vehicle=no`
   - `access=no`
   - `vehicle=no`
-  - `motor_vehicle=no`
-  - `maxheight`
-  - `maxheight:physical`
-  - `maxweight`
+  - `maxheight`, `maxheight:physical`
   - `maxaxleload`
+  - `maxweight`
   - `maxlength`
-- Truck defaults used when user does not fill all fields:
+- Truck defaults when fields are empty:
   - height: `4.0m`
   - weight: `18t`
   - length: `12m`
-- Route selection:
-  - candidates analyzed for hard truck conflicts
-  - only fully safe candidates (`hardCount === 0`) are allowed
-  - if no safe candidate exists: route is blocked and navigation cannot start
-- Navigation guard:
-  - `Avvia` is blocked if route is not fully truck-safe
+
+### Safety Scoring Behavior
+- Hard restrictions:
+  - `hgv=no`, `goods=no`, `motor_vehicle=no`, and dimension/weight over-limits
+- Soft restrictions:
+  - `access=no`, `vehicle=no`
+- Restriction-route proximity threshold tightened (~18m) to reduce false positives
+- Route scoring balances:
+  - hard conflict penalties
+  - soft conflict penalties
+  - clearance to restrictions
+  - preference for autostrada-like steps (`Axx`, `autostrada`, `raccordo`)
+- Important: route is no longer fully blocked when no perfectly safe candidate exists.
+  - Best candidate is still shown with warnings.
+  - Navigation start is not blocked solely due to warnings.
+
+## Perceived Routing Speed Improvements
+- App now applies a preliminary route immediately after OSRM response (before Overpass analysis finishes)
+- Truck-restriction analysis runs asynchronously in background
+- Route/warnings are refined when restriction analysis completes (with timeout guard)
+- This reduces waiting time before user sees a route
 
 ## Navigation Engine (Current)
-- Active GPS tracking via `watchPosition`
-- Step progression computed from nearest maneuver point
-- Voice prompts in Italian near upcoming maneuvers
-- Off-route detection by distance from route polyline
-- Auto reroute when sufficiently off route (cooldown applied)
+- GPS tracking via `watchPosition`
+- Step progression from nearest maneuver point
+- Italian instruction generation per maneuver
+- Top banner shows current instruction + icon
+- Voice prompts near next maneuver (if enabled)
+- Off-route detection by route polyline distance
+- Auto reroute when off-route with cooldown
 
-## Marker / Local Data
-- Marker GeoJSON stored in localStorage
-- Truck settings stored in localStorage
-- Marker types localized in Italian:
+## Map Layer and Markers
+- Basemap: OSM raster tiles
+- Route rendering: white casing + blue core line
+- Endpoint markers: `S` / `D`
+- User marker: blue dot + pulse + accuracy circle
+- Marker data persisted in localStorage
+- Marker types localized:
   - Da evitare
   - Attenzione
   - Ponte basso
@@ -101,52 +126,57 @@ These are inside the bottom sheet when visible.
 
 ## Key Files and Responsibilities
 - `src/App.jsx`
-  - App orchestration, routing pipeline, truck-safety selection, navigation state, voice, mode flow
+  - central orchestration: route request pipeline, restriction scoring, navigation state, voice prompt flow, mode UI
 - `src/components/MapView.jsx`
-  - Map initialization, route drawing, endpoint markers, live user dot + follow camera
-- `src/components/MarkerModal.jsx`
-  - Marker add modal (Italian)
+  - map init, basemap source/layer, route drawing, endpoint markers, user dot, follow camera
 - `src/components/TruckSettings.jsx`
-  - Truck dimensions form (Italian)
+  - truck dimensions form
+- `src/components/MarkerModal.jsx`
+  - add marker modal
 - `src/services/routing.js`
-  - Geocoding, route candidates, snap-to-road, Overpass restriction fetch
+  - geocoding, autocomplete, snapping, route candidates, Overpass restrictions
 - `src/services/storage.js`
-  - localStorage persistence and marker types
+  - localStorage persistence for markers/settings
 - `src/index.css`
-  - full app styling, swipe grabber, floating controls, nav header, blue dot animation
+  - full visual system, layout, transitions/animations, bottom panel and nav banner styles
+- `src/main.jsx`
+  - app bootstrap + SW registration/unregistration behavior
 
-## Handoff History (Major Change Timeline)
-1. Created full MVP from empty workspace (React/Vite, map, markers, settings, routing).
-2. Added PWA-ready setup docs and web install flow.
-3. Improved route reliability (geocode scoring, snap-to-road, retries).
-4. Added truck-aware alternative selection with Overpass restrictions.
-5. Added Italian localization and navigation UI.
-6. Added active navigation with GPS, step updates, voice prompts, rerouting.
-7. Redesigned to minimal mode-based flow (`Naviga/Limiti/Segnali`) with live follow map.
-8. Added strict safety-first ranking and then hard safety block when no safe route exists.
-9. Replaced bottom hide button with swipe gray grabber gesture.
-10. Added persistent top navigation header + auto-hide bottom panel on start.
+## Recent Major Changes (Chronological)
+1. Initial MVP (React/Vite + map + routing + truck settings + markers)
+2. Reliability improvements (geocode scoring, road snap, retries)
+3. Truck restriction analysis and candidate scoring
+4. Italian localization + active navigation + reroute + voice
+5. PWA migration (removed Capacitor docs/workflow, added manifest/SW/icons)
+6. Fix for stale SW behavior causing blank screens in local/dev
+7. Full UI overhaul with animated HUD + redesigned bottom panel
+8. Removed top search bar and old floating `Segui/Voce` buttons
+9. Added circular recenter arrow control
+10. Added post-route voice enable prompt
+11. Added bottom-field autocomplete
+12. Relaxed hard-block behavior and tuned scoring/proximity to reduce false "no truck roads" outcomes
+13. Added autostrada preference in route selection
+14. Introduced fast-first route rendering with async restriction refinement
 
 ## Known Constraints / Limitations
-- Public APIs are used; accuracy and availability depend on external services.
-- OSRM is not a dedicated commercial truck router; restrictions are approximated using Overpass tags + route proximity heuristics.
-- No live proprietary incident feed (unlike Apple/Google production systems).
-- Bundle size warning still present in build (MapLibre + app logic), not currently code-split.
+- Public APIs can be slow or unavailable (OSRM/Nominatim/Overpass)
+- OSRM driving profile is not a dedicated commercial truck profile
+- Overpass geometric matching remains heuristic (still possible false positives/negatives)
+- SW/PWA behavior needs HTTPS in production for install prompt reliability
+- In this coding environment, `node`/`npm` were unavailable, so recent changes were not runtime-tested here
 
 ## Immediate Next Steps (Recommended)
-1. Improve restriction matching precision:
-   - map OSRM step/edge names to OSM way IDs where possible
-   - reduce geometric false positives/false negatives
-2. Add deterministic route rejection UI with explicit reason list per candidate.
-3. Add one-time onboarding tooltip for swipe gesture discoverability.
-4. Add E2E tests for:
-   - no-safe-route block
-   - bottom sheet swipe behavior
-   - nav header persistence during active navigation
-5. Optional: introduce code-splitting to reduce first-load JS.
+1. Add explicit multi-route UI (show 2-3 alternatives with risk badges) instead of auto-pick only.
+2. Improve restriction precision by mapping route segments to OSM way IDs where feasible.
+3. Add deterministic warning breakdown per selected route (hard vs soft reasons).
+4. Add tests for:
+   - autocomplete dropdown interactions
+   - fast-first route + async refinement behavior
+   - panel toggle (press handle and restore pill)
+   - SW localhost unregister path
+5. Add optional `beforeinstallprompt` install button for clearer Android install UX.
 
 ## Extra Notes for Next Agent
-- There is also an `AI.md` file summarizing prior milestones.
-- Prefer editing `App.jsx` carefully; it currently centralizes most behavior.
-- If changing gesture behavior, keep both mouse and touch handlers.
-- Maintain Italian language consistency unless explicitly requested otherwise.
+- `App.jsx` is still the central integration point and is large; edit carefully.
+- If map appears blank, verify SW state first (especially non-localhost caches).
+- Keep Italian UI copy consistent unless explicitly asked otherwise.

@@ -356,7 +356,6 @@ function App() {
     const quickCache = { ...routeData, restrictions: [], startPlace, destinationPlace };
     setRoutingCache(quickCache);
     chooseAndApplyRoute(quickCache, false, false);
-    setShowVoicePrompt(!navigationActive);
 
     let mergedBBox = getGeometryBBox(routeData.candidates[0].geometry.coordinates);
     routeData.candidates.slice(1).forEach((candidate) => {
@@ -504,6 +503,11 @@ function App() {
   }, [navigationActive, userLocation, routeInfo, currentStepIndex]);
 
   const handleStartNavigation = () => {
+    if (!routeInfo || navigationActive) return;
+    setShowVoicePrompt(true);
+  };
+
+  const beginNavigation = (enableVoice = voiceEnabled) => {
     if (!routeInfo) return;
     setNavigationActive(true);
     setFollowUser(true);
@@ -511,7 +515,17 @@ function App() {
     setShowVoicePrompt(false);
     const firstInstruction = routeInfo.steps?.[0]?.instruction || "Continua dritto";
     setCurrentInstruction(firstInstruction);
-    speak(`Navigazione avviata. ${firstInstruction}`);
+    if (!enableVoice || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(`Navigazione avviata. ${firstInstruction}`);
+    utterance.lang = "it-IT";
+    utterance.rate = 1;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const confirmVoiceAndStart = (enableVoice) => {
+    setVoiceEnabled(enableVoice);
+    beginNavigation(enableVoice);
   };
 
   const handleStopNavigation = () => {
@@ -544,6 +558,13 @@ function App() {
   const routeDurationMin = routeInfo ? Math.round(routeInfo.durationSeconds / 60) : null;
   const activeStep = routeInfo?.steps?.[currentStepIndex] || routeInfo?.steps?.[0] || null;
   const maneuverSymbol = stepSymbol(activeStep);
+  const statusLabel = routeLoading
+    ? "Calcolo percorso in corso..."
+    : navigationActive
+      ? "Navigazione attiva"
+      : routeInfo
+        ? "Percorso pronto"
+        : "Pronto per una nuova rotta";
 
   return (
     <div className="app-shell">
@@ -560,6 +581,14 @@ function App() {
         onFollowDisabled={() => setFollowUser(false)}
       />
 
+      <header className="top-hud">
+        <p className="hud-kicker">Truck Maps Italia</p>
+        <div className="hud-row">
+          <p className="hud-title">Navigator Pro</p>
+          <span className="hud-status">{statusLabel}</span>
+        </div>
+      </header>
+
       {navigationActive ? (
         <div className="turn-banner">
           <div className="turn-symbol">{maneuverSymbol}</div>
@@ -572,7 +601,7 @@ function App() {
       ) : null}
 
       {warnings.length ? (
-        <div className="alert-stack">
+        <div className={`alert-stack ${navigationActive ? "with-nav" : ""}`}>
           <p className="warnings-title">Avvisi percorso</p>
           {warnings.slice(0, 3).map((warning) => (
             <p key={warning}>{warning}</p>
@@ -616,147 +645,139 @@ function App() {
 
           {activeMode === "navigate" ? (
             <div className="mode-pane">
-              <h3 className="pane-title">Percorso camion</h3>
-              <p className="quick-hint">{routeHint}</p>
-              <label className="field-label">
-                Partenza
-                <input
-                  value={routeForm.start}
-                  onChange={(e) => setRouteForm((c) => ({ ...c, start: e.target.value }))}
-                  placeholder={userLocation ? "Mia posizione o città" : "Città di partenza"}
-                />
-                {startSuggestions.length ? (
-                  <div className="autocomplete-list">
-                    {startSuggestions.map((item) => (
-                      <button
-                        key={item}
-                        type="button"
-                        className="autocomplete-item"
-                        onClick={() => {
-                          setRouteForm((current) => ({ ...current, start: item }));
-                          setStartSuggestions([]);
-                        }}
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </label>
-              <label className="field-label">
-                Destinazione
-                <input
-                  value={routeForm.destination}
-                  onChange={(e) => setRouteForm((c) => ({ ...c, destination: e.target.value }))}
-                  placeholder="Dove vuoi andare?"
-                />
-                {destinationSuggestions.length ? (
-                  <div className="autocomplete-list">
-                    {destinationSuggestions.map((item) => (
-                      <button
-                        key={item}
-                        type="button"
-                        className="autocomplete-item"
-                        onClick={() => {
-                          setRouteForm((current) => ({ ...current, destination: item }));
-                          setDestinationSuggestions([]);
-                        }}
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </label>
-              <div className="route-actions-row">
-                <button className="pressable secondary-btn" onClick={() => setRouteForm((c) => ({ ...c, start: "Mia posizione" }))}>
-                  Usa GPS
-                </button>
-                <button
-                  className="pressable secondary-btn"
-                  onClick={() => setRouteForm((c) => ({ start: c.destination, destination: c.start }))}
-                >
-                  Inverti
-                </button>
+              <div className="pane-hero">
+                <h3 className="pane-title">Centro Navigazione</h3>
+                <p className="quick-hint">{routeHint}</p>
               </div>
-              <button className="pressable primary-btn" onClick={handleRouteRequest} disabled={routeLoading}>
-                {routeLoading ? "Calcolo..." : "Calcola percorso"}
-              </button>
-              {routeError ? <p className="error-text">{routeError}</p> : null}
+              <div className="navigate-grid">
+                <div className="navigate-main">
+                  <label className="field-label">
+                    Partenza
+                    <input
+                      value={routeForm.start}
+                      onChange={(e) => setRouteForm((c) => ({ ...c, start: e.target.value }))}
+                      placeholder={userLocation ? "Mia posizione o città" : "Città di partenza"}
+                    />
+                    {startSuggestions.length ? (
+                      <div className="autocomplete-list">
+                        {startSuggestions.map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            className="autocomplete-item"
+                            onClick={() => {
+                              setRouteForm((current) => ({ ...current, start: item }));
+                              setStartSuggestions([]);
+                            }}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </label>
+                  <label className="field-label">
+                    Destinazione
+                    <input
+                      value={routeForm.destination}
+                      onChange={(e) => setRouteForm((c) => ({ ...c, destination: e.target.value }))}
+                      placeholder="Dove vuoi andare?"
+                    />
+                    {destinationSuggestions.length ? (
+                      <div className="autocomplete-list">
+                        {destinationSuggestions.map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            className="autocomplete-item"
+                            onClick={() => {
+                              setRouteForm((current) => ({ ...current, destination: item }));
+                              setDestinationSuggestions([]);
+                            }}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </label>
+                  <div className="route-actions-row">
+                    <button className="pressable secondary-btn" onClick={() => setRouteForm((c) => ({ ...c, start: "Mia posizione" }))}>
+                      Usa GPS
+                    </button>
+                    <button
+                      className="pressable secondary-btn"
+                      onClick={() => setRouteForm((c) => ({ start: c.destination, destination: c.start }))}
+                    >
+                      Inverti
+                    </button>
+                  </div>
+                  <button className="pressable primary-btn" onClick={handleRouteRequest} disabled={routeLoading}>
+                    {routeLoading ? "Calcolo..." : "Calcola percorso"}
+                  </button>
+                  {routeError ? <p className="error-text">{routeError}</p> : null}
+                </div>
 
-              {routeInfo ? (
-                <>
-                  <div className="metric-grid">
-                    <div>
-                      <p className="metric-label">Distanza</p>
-                      <p className="metric-value">{routeDistanceKm} km</p>
-                    </div>
-                    <div>
-                      <p className="metric-label">Tempo</p>
-                      <p className="metric-value">{routeDurationMin} min</p>
-                    </div>
-                  </div>
-                  <div className="nav-controls">
-                    {!navigationActive ? (
-                      <button className="pressable primary-btn" onClick={handleStartNavigation}>
-                        Avvia
-                      </button>
-                    ) : (
-                      <button className="pressable danger-btn" onClick={handleStopNavigation}>
-                        Ferma
-                      </button>
-                    )}
-                  </div>
-                  {showVoicePrompt && !navigationActive ? (
-                    <div className="voice-ask-card">
-                      <p className="voice-ask-title">Guida vocale</p>
-                      <p className="voice-ask-body">Vuoi attivare le istruzioni vocali per questo percorso?</p>
-                      <div className="voice-ask-actions">
-                        <button
-                          type="button"
-                          className="pressable secondary-btn"
-                          onClick={() => {
-                            setVoiceEnabled(false);
-                            setShowVoicePrompt(false);
-                          }}
-                        >
-                          No
-                        </button>
-                        <button
-                          type="button"
-                          className="pressable primary-btn"
-                          onClick={() => {
-                            setVoiceEnabled(true);
-                            setShowVoicePrompt(false);
-                          }}
-                        >
-                          Si, attiva
-                        </button>
+                {routeInfo ? (
+                  <aside className="route-insight-card">
+                    <p className="route-insight-kicker">Sintesi percorso</p>
+                    <div className="metric-grid">
+                      <div>
+                        <p className="metric-label">Distanza</p>
+                        <p className="metric-value">{routeDistanceKm} km</p>
+                      </div>
+                      <div>
+                        <p className="metric-label">Tempo</p>
+                        <p className="metric-value">{routeDurationMin} min</p>
                       </div>
                     </div>
-                  ) : null}
-                  {navigationActive && currentInstruction ? (
-                    <div className="next-step-card">
-                      <p className="next-label">Prossima manovra</p>
-                      <p className="next-instruction">{currentInstruction}</p>
-                      <p className="next-distance">Tra {Math.round(distanceToNextStepMeters)} m</p>
+                    <div className="nav-controls">
+                      {!navigationActive ? (
+                        <button className="pressable primary-btn" onClick={handleStartNavigation}>
+                          Avvia navigazione
+                        </button>
+                      ) : (
+                        <button className="pressable danger-btn" onClick={handleStopNavigation}>
+                          Ferma
+                        </button>
+                      )}
                     </div>
-                  ) : null}
-                </>
-              ) : null}
+                    {navigationActive && currentInstruction ? (
+                      <div className="next-step-card">
+                        <p className="next-label">Prossima manovra</p>
+                        <p className="next-instruction">{currentInstruction}</p>
+                        <p className="next-distance">Tra {Math.round(distanceToNextStepMeters)} m</p>
+                      </div>
+                    ) : null}
+                  </aside>
+                ) : (
+                  <aside className="route-insight-card placeholder">
+                    <p className="route-insight-kicker">Pronto</p>
+                    <p className="quick-hint">
+                      Calcola un percorso per vedere distanza, tempo e avvio navigazione.
+                    </p>
+                  </aside>
+                )}
+              </div>
             </div>
           ) : null}
 
           {activeMode === "truck" ? (
             <div className="mode-pane">
+              <div className="pane-hero">
+                <h3 className="pane-title">Parametri Veicolo</h3>
+                <p className="quick-hint">Imposta il profilo camion usato per il controllo limiti.</p>
+              </div>
               <TruckSettings initialValues={truckSettings} onSave={handleSaveTruckSettings} />
             </div>
           ) : null}
 
           {activeMode === "marks" ? (
             <div className="mode-pane">
-              <h3 className="pane-title">Segnalazioni locali</h3>
-              <p className="quick-hint">Attiva “Segna” e tocca la mappa per aggiungere segnalazioni utili ai camion.</p>
+              <div className="pane-hero">
+                <h3 className="pane-title">Segnalazioni Locali</h3>
+                <p className="quick-hint">Attiva “Segna” e tocca la mappa per aggiungere punti utili ai camion.</p>
+              </div>
               <button
                 className={`pressable ${markMode ? "primary-btn" : "secondary-btn"}`}
                 onClick={() => setMarkMode((current) => !current)}
@@ -800,6 +821,23 @@ function App() {
         onClose={() => setMapTapLocation(null)}
         onSave={handleSaveMarker}
       />
+
+      {showVoicePrompt && !navigationActive ? (
+        <div className="voice-modal-backdrop">
+          <div className="voice-modal-card">
+            <p className="voice-ask-title">Guida vocale</p>
+            <p className="voice-ask-body">Vuoi attivare le istruzioni vocali quando avvii la navigazione?</p>
+            <div className="voice-ask-actions">
+              <button type="button" className="pressable secondary-btn" onClick={() => confirmVoiceAndStart(false)}>
+                No, avvia senza voce
+              </button>
+              <button type="button" className="pressable primary-btn" onClick={() => confirmVoiceAndStart(true)}>
+                Si, avvia con voce
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
