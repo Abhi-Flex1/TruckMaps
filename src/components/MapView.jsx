@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { MARKER_TYPES } from "../services/storage";
 
 const EMPTY_ROUTE = {
   type: "Feature",
@@ -9,11 +8,16 @@ const EMPTY_ROUTE = {
   geometry: { type: "LineString", coordinates: [] }
 };
 
+function metersBetween(a, b) {
+  const dLat = (b.lat - a.lat) * 110540;
+  const dLon = (b.lon - a.lon) * (111320 * Math.cos((a.lat * Math.PI) / 180));
+  return Math.hypot(dLat, dLon);
+}
+
 function MapView({
   markers,
   routeGeometry,
   routeEndpoints,
-  restrictions,
   userLocation,
   followUser,
   markMode,
@@ -23,12 +27,15 @@ function MapView({
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
-  const markerRefs = useRef([]);
   const routeMarkerRefs = useRef([]);
   const userMarkerRef = useRef(null);
   const accuracySourceReadyRef = useRef(false);
+  const markersSourceReadyRef = useRef(false);
   const markModeRef = useRef(markMode);
   const onFollowDisabledRef = useRef(onFollowDisabled);
+  const lastFollowStateRef = useRef(null);
+  const lastFollowTsRef = useRef(0);
+  const lastAccuracyKeyRef = useRef("");
   const [isMapLoaded, setIsMapLoaded] = useState(false);
 
   useEffect(() => {
@@ -72,36 +79,6 @@ function MapView({
         type: "geojson",
         data: EMPTY_ROUTE
       });
-      map.addSource("truck-restrictions", {
-        type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: []
-        }
-      });
-      map.addLayer({
-        id: "truck-restriction-lines",
-        type: "line",
-        source: "truck-restrictions",
-        filter: ["==", ["geometry-type"], "LineString"],
-        paint: {
-          "line-color": "#ff2d20",
-          "line-width": 4.5,
-          "line-opacity": 0.88
-        }
-      });
-      map.addLayer({
-        id: "truck-restriction-points",
-        type: "circle",
-        source: "truck-restrictions",
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: {
-          "circle-color": "#ff2d20",
-          "circle-radius": 4.2,
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1.1
-        }
-      });
       map.addLayer({
         id: "route-casing",
         type: "line",
@@ -129,6 +106,71 @@ function MapView({
           features: []
         }
       });
+      map.addSource("user-markers", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: []
+        },
+        cluster: true,
+        clusterMaxZoom: 12,
+        clusterRadius: 48
+      });
+      map.addLayer({
+        id: "user-markers-clusters",
+        type: "circle",
+        source: "user-markers",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-radius": [
+            "step",
+            ["get", "point_count"],
+            14,
+            10,
+            18,
+            30,
+            24
+          ],
+          "circle-color": "#30343a",
+          "circle-stroke-width": 1.4,
+          "circle-stroke-color": "#ffffff"
+        }
+      });
+      map.addLayer({
+        id: "user-markers-cluster-count",
+        type: "symbol",
+        source: "user-markers",
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-size": 12,
+          "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"]
+        },
+        paint: {
+          "text-color": "#ffffff"
+        }
+      });
+      map.addLayer({
+        id: "user-markers-circle",
+        type: "circle",
+        source: "user-markers",
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-radius": 6,
+          "circle-stroke-width": 1.3,
+          "circle-stroke-color": "#ffffff",
+          "circle-color": [
+            "match",
+            ["get", "type"],
+            "avoid", "#e53935",
+            "caution", "#fb8c00",
+            "low bridge", "#8e24aa",
+            "narrow road", "#3949ab",
+            "good truck road", "#43a047",
+            "#666666"
+          ]
+        }
+      });
       map.addLayer({
         id: "user-accuracy-fill",
         type: "fill",
@@ -149,6 +191,7 @@ function MapView({
         }
       });
       accuracySourceReadyRef.current = true;
+      markersSourceReadyRef.current = true;
       setIsMapLoaded(true);
     });
 
@@ -189,63 +232,11 @@ function MapView({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isMapLoaded) return;
-    const source = map.getSource("truck-restrictions");
+    if (!map || !isMapLoaded || !markersSourceReadyRef.current) return;
+    const source = map.getSource("user-markers");
     if (!source) return;
-
-    const features = (restrictions || []).flatMap((restriction) => {
-      const coords = (restriction.geometry || []).map((point) => [point.lon, point.lat]);
-      if (!coords.length) return [];
-
-      const lineFeature =
-        coords.length > 1
-          ? {
-              type: "Feature",
-              properties: { id: restriction.id, kind: "restriction-line" },
-              geometry: { type: "LineString", coordinates: coords }
-            }
-          : null;
-
-      const midPoint = coords[Math.floor(coords.length / 2)];
-      const pointFeature = {
-        type: "Feature",
-        properties: { id: restriction.id, kind: "restriction-point" },
-        geometry: { type: "Point", coordinates: midPoint }
-      };
-
-      return lineFeature ? [lineFeature, pointFeature] : [pointFeature];
-    });
-
-    source.setData({
-      type: "FeatureCollection",
-      features
-    });
-  }, [isMapLoaded, restrictions]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    markerRefs.current.forEach((marker) => marker.remove());
-    markerRefs.current = [];
-
-    markers.features.forEach((feature) => {
-      if (feature.geometry?.type !== "Point") return;
-      const [lon, lat] = feature.geometry.coordinates;
-      const type = feature.properties?.type || "caution";
-
-      const el = document.createElement("button");
-      el.className = "map-marker";
-      el.style.backgroundColor = MARKER_TYPES[type]?.color || "#666";
-      el.title = feature.properties?.note || MARKER_TYPES[type]?.label || type;
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([lon, lat])
-        .addTo(map);
-
-      markerRefs.current.push(marker);
-    });
-  }, [markers]);
+    source.setData(markers);
+  }, [isMapLoaded, markers]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -289,6 +280,15 @@ function MapView({
 
     if (accuracySourceReadyRef.current) {
       const accuracyMeters = Math.min(Math.max(userLocation.accuracy || 16, 8), 80);
+      const accuracyKey = [
+        userLocation.lon.toFixed(5),
+        userLocation.lat.toFixed(5),
+        Math.round(accuracyMeters)
+      ].join(":");
+      if (accuracyKey === lastAccuracyKeyRef.current) {
+        // Skip source updates when effective circle does not change.
+      } else {
+        lastAccuracyKeyRef.current = accuracyKey;
       const circle = {
         type: "Feature",
         properties: {},
@@ -313,9 +313,35 @@ function MapView({
           features: [circle]
         });
       }
+      }
     }
 
     if (followUser) {
+      const now = Date.now();
+      const minIntervalMs = 550;
+      const previous = lastFollowStateRef.current;
+      const movedMeters = previous
+        ? metersBetween(
+            { lat: previous.lat, lon: previous.lon },
+            { lat: userLocation.lat, lon: userLocation.lon }
+          )
+        : Infinity;
+      const headingDelta = previous
+        ? Math.abs((userLocation.heading ?? previous.heading ?? 0) - (previous.heading ?? 0))
+        : 999;
+      const shouldSkip =
+        previous &&
+        now - lastFollowTsRef.current < minIntervalMs &&
+        movedMeters < 5 &&
+        headingDelta < 12;
+      if (shouldSkip) return;
+
+      lastFollowStateRef.current = {
+        lat: userLocation.lat,
+        lon: userLocation.lon,
+        heading: Number.isFinite(userLocation.heading) ? userLocation.heading : null
+      };
+      lastFollowTsRef.current = now;
       map.easeTo({
         center: [userLocation.lon, userLocation.lat],
         duration: 650,
@@ -329,4 +355,4 @@ function MapView({
   return <div ref={mapContainerRef} className={markMode ? "map mark-mode" : "map"} />;
 }
 
-export default MapView;
+export default memo(MapView);

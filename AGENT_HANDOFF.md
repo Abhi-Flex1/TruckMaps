@@ -1,26 +1,32 @@
 # AGENT_HANDOFF.md
 
 ## Purpose
-This document is a full handoff for another coding agent to continue work quickly.
-It captures the current architecture, behavior, key files, recent major changes, constraints, and recommended next steps.
+This handoff captures the current implementation after a performance-focused rewrite.
+It is intended to let the next agent continue quickly without reverse-engineering the app.
 
 ## Project Identity
 - Name: `truck-maps-italy`
-- Type: React + Vite web app with PWA install support
-- Scope: Italy-only truck navigation support, no backend
-- Data model: local-only state (`localStorage`) plus live public API data
+- Type: React + Vite PWA
+- Scope: Italy-only truck navigation assistant (frontend-only)
+- Data model: localStorage + public map/routing/geocoding APIs
 
-## Tech Stack
-- React 19 + Vite
+## Current Status (As Of This Handoff)
+- Red restriction overlays/lines are fully removed from map rendering.
+- Truck restrictions are still used in route scoring logic (not drawn on map).
+- Core architecture was refactored from a monolithic `App.jsx` into modules/hooks.
+- Build is passing locally with `npm run build`.
+
+## Stack
+- React 19 + Vite 7
 - MapLibre GL JS
-- OpenStreetMap raster tiles (`tile.openstreetmap.org`)
-- OSRM public API (routing + nearest)
-- Nominatim (geocoding + autocomplete)
-- Overpass API (truck restriction tags)
-- Web APIs:
+- OSM raster tiles (`tile.openstreetmap.org`)
+- OSRM public API (route + nearest)
+- Nominatim (geocode + autocomplete)
+- Overpass API (restriction tags for route safety scoring)
+- Browser APIs:
   - Geolocation (`watchPosition`)
-  - Speech Synthesis (`SpeechSynthesis`, Italian voice)
-  - Service Worker + Web App Manifest (PWA)
+  - Speech synthesis (`SpeechSynthesis`)
+  - Service Worker + Web App Manifest
 
 ## Run / Build
 - Install: `npm install`
@@ -28,168 +34,94 @@ It captures the current architecture, behavior, key files, recent major changes,
 - Build: `npm run build`
 - Preview: `npm run preview`
 
-## PWA Setup (Current)
-- Manifest: `public/manifest.webmanifest`
-- Service worker: `public/sw.js`
-- Icons: `public/icons/icon-192.png`, `public/icons/icon-512.png`
-- SW registration: `src/main.jsx`
-  - On localhost/127.0.0.1/::1, existing service workers are unregistered to avoid stale-cache blank screen during dev.
-  - On non-localhost, SW is registered normally.
-- `index.html` includes:
-  - manifest link
-  - theme color
-  - apple touch icon/web-app meta tags
-  - viewport set to `width=device-width, initial-scale=1.0, viewport-fit=cover`
+## Architectural Rewrite Summary
 
-## Current UX (Latest)
-- App language: Italian
-- Top `Navigator Pro` HUD bar has been removed.
-- Active navigation header (`turn-banner`) includes maneuver symbol + instruction + distance.
-- Bottom control panel:
-  - modes: `Naviga / Limiti / Segnali`
-  - top handle toggles hide/show on press
-  - restore pill appears when hidden
-- Floating control:
-  - single circular recenter button (`recenter-orb`)
-  - recenter now forces immediate camera `easeTo` each tap (not only follow-state toggle)
-- Voice flow:
-  - pressing `Avvia navigazione` opens a modal popup
-  - user chooses `Si, avvia con voce` or `No, avvia senza voce`
-  - navigation starts only after this choice
-- Route warnings UI has been removed (no warning panel or warning text shown).
-- Red truck-restriction indicators are currently disabled/removed from map rendering.
+### Before
+- `src/App.jsx` contained:
+  - geometry math
+  - navigation step logic
+  - truck restriction scoring
+  - geolocation and autocomplete side effects
+  - UI orchestration
 
-## Route Input UX (Autocomplete)
-- Start and destination fields in `Naviga` mode have autocomplete dropdowns.
-- Suggestions come from Nominatim (Italy-bounded).
-- Debounced requests with stale-response protection via request IDs.
-- Selecting a suggestion fills the field and closes suggestions.
+### After
+- `src/App.jsx` now orchestrates state/UI and delegates logic to reusable modules.
+- New modules:
+  - `src/lib/geo.js`
+    - `haversineMeters`, route distance helpers, bbox helpers
+  - `src/lib/navigation.js`
+    - instruction generation, step symbols, truck normalization, candidate scoring, next-step resolution
+  - `src/hooks/useDebouncedPlaces.js`
+    - debounced/stale-safe autocomplete flow
+  - `src/hooks/useUserLocation.js`
+    - geolocation watcher lifecycle
 
-## Routing and Safety Logic (Current)
-- Route candidates fetched from OSRM alternatives (`alternatives=3`, `steps=true`).
-- Start/destination snapped to road via OSRM nearest.
-- Restriction data fetched from Overpass in route envelope.
-- Restriction tags considered:
-  - `hgv=no`
-  - `goods=no`
-  - `motor_vehicle=no`
-  - `access=no`
-  - `vehicle=no`
-  - `maxheight`, `maxheight:physical`
-  - `maxaxleload`
-  - `maxweight`
-  - `maxlength`
-- Truck defaults when fields are empty:
-  - height: `4.0m`
-  - weight: `18t`
-  - length: `12m`
+## Performance Changes
+1. App-level code splitting:
+- `MapView` is lazy-loaded via `React.lazy` + `Suspense`.
+- Effect: initial entry chunk is much smaller; heavy map bundle loads when needed.
 
-### Safety Scoring Behavior
-- Hard restrictions:
-  - `hgv=no`, `goods=no`, `motor_vehicle=no`, and dimension/weight over-limits
-- Soft restrictions:
-  - `access=no`, `vehicle=no`
-- Restriction-route proximity threshold ~18m.
-- Route scoring balances:
-  - hard conflict penalties
-  - soft conflict penalties
-  - clearance to restrictions
-  - preference for autostrada-like steps (`Axx`, `autostrada`, `raccordo`)
-- Important current behavior:
-  - app always applies the best-scored candidate
-  - warning surfaces/messages are intentionally hidden in UI
+2. Reduced parent re-render pressure:
+- `MapView` exported with `memo(...)`.
+- Stable callbacks introduced for follow toggle and other handlers.
 
-## Perceived Routing Speed Improvements
-- App applies a preliminary route immediately after OSRM response (before Overpass analysis finishes).
-- Restriction analysis runs asynchronously in background.
-- Route is refined when restriction analysis completes (with timeout guard).
+3. Side effects moved into hooks/modules:
+- Better separation lowered `App.jsx` complexity and reduced unnecessary effect churn.
 
-## Navigation Engine (Current)
-- GPS tracking via `watchPosition`
-- Step progression from nearest maneuver point
-- Italian instruction generation per maneuver
-- Voice prompts near next maneuver (if enabled)
-- Off-route detection by route polyline distance
-- Auto reroute when off-route with cooldown
+4. Metrics from current build:
+- Main chunk now around `~219 KB` (was previously over `1.2 MB` monolith bundle).
+- Map chunk now isolated (~`1.0 MB`) and deferred.
 
-## Map Layer and Markers
-- Basemap: OSM raster tiles
-- Route rendering: white casing + blue core line
-- Endpoint markers: `S` / `D`
-- User marker: blue dot + pulse + accuracy circle
-- Marker data persisted in localStorage
-- Marker types localized:
-  - Da evitare
-  - Attenzione
-  - Ponte basso
-  - Strada stretta
-  - Strada consigliata
-
-## Key Files and Responsibilities
+## Key Files (Current Responsibilities)
 - `src/App.jsx`
-  - central orchestration: route request pipeline, restriction scoring, navigation state, voice prompt modal flow, recenter handling, mode UI
+  - app orchestration, route request lifecycle, navigation controls, mode panels, modal flow
 - `src/components/MapView.jsx`
-  - map init, basemap source/layer, route drawing, endpoint markers, user dot, follow camera
+  - map init/render, route drawing, endpoint markers, user location dot, follow-camera behavior
 - `src/components/TruckSettings.jsx`
-  - truck dimensions form
+  - truck profile form (height/weight/length)
 - `src/components/MarkerModal.jsx`
-  - add marker modal
+  - marker creation modal
 - `src/services/routing.js`
-  - geocoding, autocomplete, snapping, route candidates, Overpass restrictions
+  - geocode/autocomplete/snap/route-candidate fetch + Overpass restriction fetch
 - `src/services/storage.js`
-  - localStorage persistence for markers/settings
-- `src/index.css`
-  - full visual system (now monochrome iOS-like), layout, transitions/animations
+  - localStorage read/write for markers + truck settings
+- `src/lib/geo.js`
+  - geometry/math utilities
+- `src/lib/navigation.js`
+  - route analysis/navigation instruction utilities
+- `src/hooks/useDebouncedPlaces.js`
+  - debounced autocomplete hook
+- `src/hooks/useUserLocation.js`
+  - geolocation hook
 - `src/main.jsx`
   - app bootstrap + SW registration/unregistration behavior
 
-## Detailed Session Changelog (All Changes Made)
-1. Replaced `src/index.css` visual system with a full redesign (new gradients, controls, cards, modal, motion system, responsive behavior).
-2. Updated `index.html` viewport meta to include `viewport-fit=cover`.
-3. Enforced `font-size: 16px` on inputs/selects/textarea to prevent mobile zoom-on-focus.
-4. Restructured `App.jsx` layout (navigate panel split into main form + side insight card; updated pane composition).
-5. Changed voice UX: removed inline voice card and added start-navigation modal popup flow.
-6. Added explicit start helpers in `App.jsx`: `beginNavigation` and `confirmVoiceAndStart`.
-7. Removed in-panel warnings display and warning state usage from `App.jsx`.
-8. Changed route hint copy to neutral non-warning messaging (`Ottimizzazione in corso`, `Percorso ottimizzato`).
-9. Fixed recenter reliability by adding `handleRecenter` that always triggers immediate `map.easeTo(...)` when possible.
-10. Added truck restriction map overlay support:
-   - `App.jsx` stores `mapRestrictions` and passes to map.
-   - `MapView.jsx` adds `truck-restrictions` GeoJSON source.
-   - `MapView.jsx` adds red line and red point layers and updates them reactively.
-   - `App.jsx` preloads restrictions for all Italy via chunked tiled Overpass requests.
-   - `App.jsx` also fetches restriction data for the current viewport on load and `moveend` for immediate visibility and merges results with country preload cache.
-11. Removed all red truck-restriction marker code from app/map:
-   - deleted restriction overlay prop/data flow from `App.jsx`
-   - deleted country/viewport restriction preload state/effects from `App.jsx`
-   - deleted all truck restriction source/layer/update code from `MapView.jsx`
-   - map now shows no red restriction overlays
-12. Converted theme to monochrome iOS-like styling in `src/index.css`:
-   - switched font stack to SF/Apple system stack
-   - replaced colorful palette with grayscale tokens
-   - updated HUD/panel/buttons/cards/modals/chips/controls to monochrome glass style
-   - updated orb and pulse/shadow colors to grayscale variants
-13. Removed top HUD bar from `App.jsx` that displayed `Truck Maps Italia / Navigator Pro / status`.
+## UX Behavior (Current)
+- Italian UI
+- Modes: `Naviga`, `Limiti`, `Segnali`
+- Voice start confirmation modal still present
+- Route is applied quickly first, then refined after Overpass scoring completes
+- Route warnings remain hidden in UI (safety affects scoring, not warning panels)
+- No red truck restriction overlays on map
 
-## Known Constraints / Limitations
-- Public APIs can be slow or unavailable (OSRM/Nominatim/Overpass).
-- OSRM driving profile is not a dedicated commercial truck profile.
-- Overpass geometric matching remains heuristic (still possible false positives/negatives).
-- SW/PWA behavior needs HTTPS in production for install prompt reliability.
-- In this coding environment, `node`/`npm` were unavailable, so runtime build/test validation could not be executed.
-- `src/index.css` still contains some unused selectors for removed HUD/warnings (`.top-hud`, `.hud-*`, `.alert-stack*`), safe to clean up later.
+## Known Constraints
+- Public APIs (OSRM/Nominatim/Overpass) are rate-limited and can timeout.
+- OSRM profile is general driving, not a commercial truck engine.
+- Overpass matching is heuristic and can be noisy.
+- PWA behavior can serve stale assets outside localhost (service worker cache).
 
-## Immediate Next Steps (Recommended)
-1. Remove dead CSS selectors related to removed HUD/warning UI.
-2. Add explicit multi-route UI (visual alternatives instead of auto-pick only).
-3. If truck overlays are needed again, reintroduce with a deterministic debug counter and endpoint fallback monitoring.
-4. Add tests for:
-   - voice-start modal flow
-   - recenter button behavior (force camera recenter)
-   - panel hide/show + restore pill
-5. Validate UI on real iOS Safari and Android Chrome after installing `npm` locally.
+## Validation Performed
+- `npm run build` completed successfully after rewrite.
+- Bundle output confirms map code splitting and reduced main chunk size.
 
-## Extra Notes for Next Agent
-- `App.jsx` remains the central integration file and is large; edit carefully.
-- If map appears blank, verify service worker state/caches first (especially outside localhost).
-- Keep Italian UI copy consistent unless explicitly requested otherwise.
+## Recommended Next Steps
+1. Add unit tests for pure logic in `src/lib/navigation.js` and `src/lib/geo.js`.
+2. Add integration tests for voice-start flow and reroute cooldown behavior.
+3. Consider dynamic import for Overpass-heavy logic to further reduce map chunk cost.
+4. Remove `src/components/RoutePanel.jsx` if confirmed unused.
+5. Consider worker/off-main-thread analysis for route scoring if route alternatives increase.
+
+## Notes For Next Agent
+- Prefer extending logic in `lib/` and `hooks/` rather than re-expanding `App.jsx`.
+- Keep copy in Italian unless asked otherwise.
+- If app seems stale in production, verify service-worker cache state first.
