@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import MapView from "./components/MapView";
 import MarkerModal from "./components/MarkerModal";
 import TruckSettings from "./components/TruckSettings";
@@ -149,6 +149,25 @@ function expandBBox(bbox, paddingDeg = 0.06) {
   };
 }
 
+const ITALY_BBOX = {
+  south: 36.4,
+  west: 6.6,
+  north: 47.2,
+  east: 18.8
+};
+
+function createBboxTiles(bbox, tileSizeDeg = 2.0) {
+  const tiles = [];
+  for (let south = bbox.south; south < bbox.north; south += tileSizeDeg) {
+    const north = Math.min(south + tileSizeDeg, bbox.north);
+    for (let west = bbox.west; west < bbox.east; west += tileSizeDeg) {
+      const east = Math.min(west + tileSizeDeg, bbox.east);
+      tiles.push({ south, west, north, east });
+    }
+  }
+  return tiles;
+}
+
 function routeNearRestriction(routeCoordinates, restrictionGeometry) {
   return restrictionGeometry.some(
     (point) => minDistanceToRouteMeters(point, routeCoordinates) <= 18
@@ -283,6 +302,19 @@ function App() {
   const startAutocompleteIdRef = useRef(0);
   const destinationAutocompleteIdRef = useRef(0);
   const mapRestrictionsRequestIdRef = useRef(0);
+  const restrictionIndexRef = useRef(new Map());
+  const countryPreloadStartedRef = useRef(false);
+
+  const mergeMapRestrictions = useCallback((incomingRestrictions) => {
+    if (!incomingRestrictions?.length) return;
+    const next = new Map(restrictionIndexRef.current);
+    incomingRestrictions.forEach((restriction) => {
+      if (!restriction?.id) return;
+      next.set(restriction.id, restriction);
+    });
+    restrictionIndexRef.current = next;
+    setMapRestrictions(Array.from(next.values()));
+  }, []);
 
   const speak = (text) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
@@ -366,7 +398,7 @@ function App() {
       const cacheData = { ...routeData, restrictions, startPlace, destinationPlace };
       setRoutingCache(cacheData);
       if (restrictions.length) {
-        setMapRestrictions(restrictions);
+        mergeMapRestrictions(restrictions);
       }
       chooseAndApplyRoute(cacheData, true, true);
     };
@@ -401,6 +433,42 @@ function App() {
   };
 
   useEffect(() => {
+    if (!mapObject || countryPreloadStartedRef.current) return undefined;
+    countryPreloadStartedRef.current = true;
+    let cancelled = false;
+    const ITALY_TILE_SIZE_DEG = 2.0;
+    const ITALY_BATCH_SIZE = 2;
+    const ITALY_BATCH_DELAY_MS = 180;
+
+    const preloadItalyRestrictions = async () => {
+      const tiles = createBboxTiles(ITALY_BBOX, ITALY_TILE_SIZE_DEG);
+      for (let i = 0; i < tiles.length; i += ITALY_BATCH_SIZE) {
+        const batch = tiles.slice(i, i + ITALY_BATCH_SIZE);
+        const results = await Promise.all(
+          batch.map(async (tile) => {
+            try {
+              return await fetchTruckRestrictionsForBBox(tile);
+            } catch {
+              return [];
+            }
+          })
+        );
+        if (cancelled) return;
+        mergeMapRestrictions(results.flat());
+        if (i + ITALY_BATCH_SIZE < tiles.length) {
+          await new Promise((resolve) => setTimeout(resolve, ITALY_BATCH_DELAY_MS));
+          if (cancelled) return;
+        }
+      }
+    };
+
+    void preloadItalyRestrictions();
+    return () => {
+      cancelled = true;
+    };
+  }, [mapObject, mergeMapRestrictions]);
+
+  useEffect(() => {
     if (!mapObject) return undefined;
     let cancelled = false;
     let debounceId = null;
@@ -425,7 +493,7 @@ function App() {
       try {
         const restrictions = await fetchTruckRestrictionsForBBox(bbox);
         if (cancelled || mapRestrictionsRequestIdRef.current !== requestId) return;
-        setMapRestrictions(restrictions);
+        mergeMapRestrictions(restrictions);
       } catch {
         // Keep currently displayed restrictions if Overpass is temporarily unavailable.
       }
@@ -446,7 +514,7 @@ function App() {
       mapObject.off("moveend", handleMoveEnd);
       if (debounceId) clearTimeout(debounceId);
     };
-  }, [mapObject]);
+  }, [mapObject, mergeMapRestrictions]);
 
   useEffect(() => {
     if (!routingCache) return;
