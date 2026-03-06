@@ -1,6 +1,10 @@
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OSRM_BASE_URL = "https://router.project-osrm.org";
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const OVERPASS_URLS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.openstreetmap.ru/api/interpreter"
+];
 const ITALY_VIEWBOX = "6.6,47.2,18.8,36.4";
 
 async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
@@ -178,15 +182,55 @@ export async function fetchTruckRestrictionsForBBox(bbox) {
   way["highway"]["maxaxleload"](${south},${west},${north},${east});
   way["highway"]["maxweight"](${south},${west},${north},${east});
   way["highway"]["maxlength"](${south},${west},${north},${east});
+  node["hgv"="no"](${south},${west},${north},${east});
+  node["goods"="no"](${south},${west},${north},${east});
+  node["access"="no"](${south},${west},${north},${east});
+  node["vehicle"="no"](${south},${west},${north},${east});
+  node["motor_vehicle"="no"](${south},${west},${north},${east});
+  node["maxheight"](${south},${west},${north},${east});
+  node["maxheight:physical"](${south},${west},${north},${east});
+  node["maxaxleload"](${south},${west},${north},${east});
+  node["maxweight"](${south},${west},${north},${east});
+  node["maxlength"](${south},${west},${north},${east});
+  node["barrier"~"height_restrictor|gate|lift_gate"](${south},${west},${north},${east});
 );
 out tags geom;
 `;
 
-  const data = await postTextForJson(OVERPASS_URL, query, 30000);
-  const ways = (data?.elements || []).filter((item) => item.type === "way" && item.tags && item.geometry);
-  return ways.map((way) => ({
-    id: way.id,
-    tags: way.tags,
-    geometry: way.geometry.map((coord) => ({ lon: coord.lon, lat: coord.lat }))
-  }));
+  let data = null;
+  let lastError = null;
+  for (const endpoint of OVERPASS_URLS) {
+    try {
+      data = await postTextForJson(endpoint, query, 30000);
+      if (data) break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!data) {
+    throw lastError || new Error("Overpass unavailable");
+  }
+  const elements = data?.elements || [];
+  const restrictions = [];
+
+  elements.forEach((item) => {
+    if (!item?.tags) return;
+    if (item.type === "way" && Array.isArray(item.geometry) && item.geometry.length) {
+      restrictions.push({
+        id: `way_${item.id}`,
+        tags: item.tags,
+        geometry: item.geometry.map((coord) => ({ lon: coord.lon, lat: coord.lat }))
+      });
+      return;
+    }
+    if (item.type === "node" && Number.isFinite(item.lon) && Number.isFinite(item.lat)) {
+      restrictions.push({
+        id: `node_${item.id}`,
+        tags: item.tags,
+        geometry: [{ lon: item.lon, lat: item.lat }]
+      });
+    }
+  });
+
+  return restrictions;
 }

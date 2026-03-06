@@ -57,8 +57,7 @@ It captures the current architecture, behavior, key files, recent major changes,
   - user chooses `Si, avvia con voce` or `No, avvia senza voce`
   - navigation starts only after this choice
 - Route warnings UI has been removed (no warning panel or warning text shown).
-- Truck restriction red indicators are loaded country-wide (Italy) in background and are visible even without active navigation.
-  - plus viewport-priority fetch on map load/move for immediate local visibility while country preload continues.
+- Red truck-restriction indicators are currently disabled/removed from map rendering.
 
 ## Route Input UX (Autocomplete)
 - Start and destination fields in `Naviga` mode have autocomplete dropdowns.
@@ -116,9 +115,6 @@ It captures the current architecture, behavior, key files, recent major changes,
 ## Map Layer and Markers
 - Basemap: OSM raster tiles
 - Route rendering: white casing + blue core line
-- New overlay: truck-restriction geometry rendered in red across Italy (route-independent preload)
-  - line layer for restricted road ways
-  - point layer for restriction anchors
 - Endpoint markers: `S` / `D`
 - User marker: blue dot + pulse + accuracy circle
 - Marker data persisted in localStorage
@@ -131,9 +127,9 @@ It captures the current architecture, behavior, key files, recent major changes,
 
 ## Key Files and Responsibilities
 - `src/App.jsx`
-  - central orchestration: route request pipeline, restriction scoring, country-wide restriction preload, navigation state, voice prompt modal flow, recenter handling, mode UI
+  - central orchestration: route request pipeline, restriction scoring, navigation state, voice prompt modal flow, recenter handling, mode UI
 - `src/components/MapView.jsx`
-  - map init, basemap source/layer, route drawing, truck restriction overlay drawing, endpoint markers, user dot, follow camera
+  - map init, basemap source/layer, route drawing, endpoint markers, user dot, follow camera
 - `src/components/TruckSettings.jsx`
   - truck dimensions form
 - `src/components/MarkerModal.jsx`
@@ -163,12 +159,17 @@ It captures the current architecture, behavior, key files, recent major changes,
    - `MapView.jsx` adds red line and red point layers and updates them reactively.
    - `App.jsx` preloads restrictions for all Italy via chunked tiled Overpass requests.
    - `App.jsx` also fetches restriction data for the current viewport on load and `moveend` for immediate visibility and merges results with country preload cache.
-11. Converted theme to monochrome iOS-like styling in `src/index.css`:
+11. Removed all red truck-restriction marker code from app/map:
+   - deleted restriction overlay prop/data flow from `App.jsx`
+   - deleted country/viewport restriction preload state/effects from `App.jsx`
+   - deleted all truck restriction source/layer/update code from `MapView.jsx`
+   - map now shows no red restriction overlays
+12. Converted theme to monochrome iOS-like styling in `src/index.css`:
    - switched font stack to SF/Apple system stack
    - replaced colorful palette with grayscale tokens
    - updated HUD/panel/buttons/cards/modals/chips/controls to monochrome glass style
    - updated orb and pulse/shadow colors to grayscale variants
-12. Removed top HUD bar from `App.jsx` that displayed `Truck Maps Italia / Navigator Pro / status`.
+13. Removed top HUD bar from `App.jsx` that displayed `Truck Maps Italia / Navigator Pro / status`.
 
 ## Known Constraints / Limitations
 - Public APIs can be slow or unavailable (OSRM/Nominatim/Overpass).
@@ -180,17 +181,15 @@ It captures the current architecture, behavior, key files, recent major changes,
 
 ## Immediate Next Steps (Recommended)
 1. Remove dead CSS selectors related to removed HUD/warning UI.
-2. Add toggle to show/hide restriction overlay (currently always shown when available).
-3. Add explicit multi-route UI (visual alternatives instead of auto-pick only).
+2. Add explicit multi-route UI (visual alternatives instead of auto-pick only).
+3. If truck overlays are needed again, reintroduce with a deterministic debug counter and endpoint fallback monitoring.
 4. Add tests for:
    - voice-start modal flow
    - recenter button behavior (force camera recenter)
-   - restriction overlay render/update lifecycle
    - panel hide/show + restore pill
 5. Validate UI on real iOS Safari and Android Chrome after installing `npm` locally.
 
 ## Extra Notes for Next Agent
 - `App.jsx` remains the central integration file and is large; edit carefully.
-- Map restriction overlay expects Overpass geometry array format from `routing.js`.
 - If map appears blank, verify service worker state/caches first (especially outside localhost).
 - Keep Italian UI copy consistent unless explicitly requested otherwise.
